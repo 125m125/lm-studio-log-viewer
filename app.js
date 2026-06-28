@@ -1,0 +1,184 @@
+(function () {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const state = { result: null, selectedId: null, query: "", status: "all", model: "all", loading: false };
+  const els = {
+    shell: $("app-shell"), welcome: $("drop-zone"), workspace: $("workspace"), input: $("file-input"),
+    open: $("open-files"), welcomeOpen: $("welcome-open"), clear: $("clear-files"), search: $("search"),
+    status: $("status-filter"), model: $("model-filter"), list: $("thread-list"), stats: $("stats"),
+    detail: $("detail"), toast: $("toast")
+  };
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[ch]);
+  }
+  function contentText(value) {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    return JSON.stringify(value, null, 2);
+  }
+  function compact(value) { return contentText(value).replace(/\s+/g, " ").trim(); }
+  function formatNumber(n) { return new Intl.NumberFormat().format(n || 0); }
+  function formatTime(call) {
+    if (call.timestamp == null) return call.timestampRaw || "Unknown time";
+    return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(call.timestamp);
+  }
+  function formatDuration(ms) {
+    if (ms == null) return "—";
+    if (ms < 1000) return ms + " ms";
+    const seconds = ms / 1000;
+    return seconds < 60 ? seconds.toFixed(1) + " s" : Math.floor(seconds / 60) + "m " + Math.round(seconds % 60) + "s";
+  }
+  function statusLabel(status) { return status === "matched" ? "Matched" : status === "uncertain" ? "Uncertain match" : "Incomplete"; }
+  function toast(message) {
+    els.toast.textContent = message; els.toast.classList.add("show");
+    clearTimeout(toast.timer); toast.timer = setTimeout(() => els.toast.classList.remove("show"), 2400);
+  }
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); }
+    catch (_) {
+      const area = document.createElement("textarea"); area.value = text; area.style.position = "fixed"; area.style.opacity = "0";
+      document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove();
+    }
+    toast("Copied to clipboard");
+  }
+
+  function runParser(files) {
+    if (location.protocol !== "file:" && typeof Worker !== "undefined") {
+      return new Promise((resolve, reject) => {
+        const worker = new Worker("worker.js");
+        worker.onmessage = event => { worker.terminate(); event.data.ok ? resolve(event.data.result) : reject(new Error(event.data.error)); };
+        worker.onerror = event => { worker.terminate(); reject(new Error(event.message || "Worker failed")); };
+        worker.postMessage({ files });
+      });
+    }
+    return new Promise(resolve => setTimeout(() => resolve(window.LMStudioLogParser.parseFiles(files)), 20));
+  }
+
+  async function loadFiles(fileList) {
+    const chosen = Array.from(fileList || []).filter(file => file && (file.name.endsWith(".log") || file.type.startsWith("text/") || !file.type));
+    if (!chosen.length) return toast("Choose one or more text log files");
+    state.loading = true;
+    els.open.textContent = "Reading…"; els.open.disabled = true; els.welcomeOpen.disabled = true;
+    try {
+      const files = await Promise.all(chosen.map(async file => ({ name: file.name, text: await file.text() })));
+      state.result = await runParser(files);
+      state.selectedId = state.result.threads[0] && state.result.threads[0].calls.at(-1).id || null;
+      state.query = ""; state.status = "all"; state.model = "all";
+      els.search.value = ""; els.status.value = "all";
+      populateModels(); render();
+      toast("Parsed " + state.result.stats.calls + " requests from " + chosen.length + " file" + (chosen.length === 1 ? "" : "s"));
+    } catch (error) {
+      console.error(error); toast("Could not parse these logs: " + error.message);
+    } finally {
+      state.loading = false; els.open.textContent = "Open log files"; els.open.disabled = false; els.welcomeOpen.disabled = false;
+    }
+  }
+
+  function populateModels() {
+    const models = [...new Set(state.result.calls.map(call => call.model))].sort();
+    els.model.innerHTML = '<option value="all">All models</option>' + models.map(model => '<option value="' + escapeHtml(model) + '">' + escapeHtml(model) + "</option>").join("");
+    els.model.value = "all";
+  }
+
+  function clearAll() {
+    state.result = null; state.selectedId = null; els.input.value = "";
+    els.shell.classList.add("empty"); els.workspace.hidden = true; els.welcome.hidden = false; els.clear.disabled = true;
+    els.detail.textContent = ""; els.list.textContent = "";
+  }
+
+  function matches(call) {
+    if (state.status !== "all" && call.status !== state.status) return false;
+    if (state.model !== "all" && call.model !== state.model) return false;
+    if (!state.query) return true;
+    const haystack = [call.model, call.endpoint, call.sourceName, call.requestRaw, call.responseRaw].join("\n").toLowerCase();
+    return haystack.includes(state.query);
+  }
+
+  function callTitle(call) {
+    const user = call.messages.slice().reverse().find(message => message.role === "user");
+    const text = user ? compact(user.content) : call.endpoint;
+    return text || "Empty request";
+  }
+
+  function renderStats() {
+    const s = state.result.stats;
+    const items = [
+      [s.calls, "requests", "accent"], [s.matched, "matched", "good"], [s.incomplete, "incomplete", "warn"],
+      [s.threads, "threads", ""], [formatNumber(s.promptTokens + s.completionTokens), "tokens", ""]
+    ];
+    els.stats.innerHTML = items.map(([value, label, tone]) => '<div class="stat ' + tone + '"><strong>' + value + '</strong><span>' + label + "</span></div>").join("");
+  }
+
+  function renderList() {
+    const visibleThreads = state.result.threads.map(thread => ({ ...thread, visible: thread.calls.filter(matches) })).filter(thread => thread.visible.length);
+    if (!visibleThreads.length) {
+      els.list.innerHTML = '<div class="empty-filter"><strong>No matching calls</strong><span>Try a wider search or filter.</span></div>';
+      return;
+    }
+    els.list.innerHTML = visibleThreads.map((thread, threadIndex) => {
+      const root = thread.calls[0];
+      const calls = thread.visible.map((call, index) => {
+        const active = call.id === state.selectedId ? " active" : "";
+        const relation = call.predecessorId ? '<span class="turn-connector" aria-hidden="true"></span>' : "";
+        return '<button class="call-item' + active + '" data-call-id="' + escapeHtml(call.id) + '" type="button">' + relation +
+          '<span class="call-top"><span class="status-dot ' + call.status + '"></span><span>' + escapeHtml(formatTime(call)) + '</span><span class="message-count">' + call.messages.length + ' msg</span></span>' +
+          '<strong>' + escapeHtml(callTitle(call)) + '</strong><span class="call-meta">' + escapeHtml(call.sourceName) + ' · ' + escapeHtml(formatDuration(call.durationMs)) + "</span></button>";
+      }).join("");
+      return '<section class="thread-group"><div class="thread-heading"><span>Thread ' + String(threadIndex + 1).padStart(2, "0") + '</span><span>' + thread.calls.length + ' call' + (thread.calls.length === 1 ? "" : "s") + '</span></div>' + calls + "</section>";
+    }).join("");
+    els.list.querySelectorAll("[data-call-id]").forEach(button => button.addEventListener("click", () => { state.selectedId = button.dataset.callId; renderList(); renderDetail(); }));
+  }
+
+  function detailBlock(label, value, options) {
+    options = options || {};
+    const text = contentText(value);
+    if (!text && !options.showEmpty) return "";
+    return '<details class="payload"' + (options.open ? " open" : "") + '><summary><span>' + escapeHtml(label) + '</span><span class="payload-info">' + formatNumber(text.length) + ' chars</span></summary><div class="payload-body"><button class="copy-button" type="button" data-copy="' + escapeHtml(options.copyKey || label) + '" aria-label="Copy ' + escapeHtml(label) + '">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre></div></details>";
+  }
+
+  function renderMessage(message, call) {
+    const delta = call.delta || { added: [] };
+    const isAdded = delta.added.includes(message.index);
+    const text = contentText(message.content);
+    const roleTone = ["system", "user", "assistant", "tool"].includes(message.role) ? message.role : "other";
+    return '<details class="message-card ' + roleTone + (isAdded && call.predecessorId ? " added" : "") + '"' + (message.index === call.messages.length - 1 ? " open" : "") + '><summary><span class="role-badge">' + escapeHtml(message.role) + '</span><span class="message-preview">' + escapeHtml(compact(message.content).slice(0, 150) || "(empty content)") + '</span><span class="message-size">' + formatNumber(text.length) + ' chars</span></summary><div class="message-body"><button class="copy-button" data-copy-message="' + message.index + '" type="button">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre>" + (message.toolCalls ? '<div class="subpayload"><span>Tool calls</span><pre>' + escapeHtml(JSON.stringify(message.toolCalls, null, 2)) + "</pre></div>" : "") + "</div></details>";
+  }
+
+  function renderDetail() {
+    const call = state.result.calls.find(item => item.id === state.selectedId) || state.result.calls[0];
+    if (!call) { els.detail.innerHTML = '<div class="detail-empty">No request selected.</div>'; return; }
+    state.selectedId = call.id;
+    const output = call.outputMessage || {};
+    const delta = call.delta || { retained: 0, removed: [], added: [] };
+    const ancestry = call.predecessorId ? '<div class="ancestry"><span>Conversation continuation · ' + escapeHtml(call.threadConfidence) + ' confidence</span><span>' + delta.retained + ' retained</span><span class="plus">+' + delta.added.length + ' added</span><span class="minus">−' + delta.removed.length + ' removed</span></div>' : '<div class="ancestry root"><span>Conversation root</span><span>' + call.messages.length + " initial messages</span></div>";
+    els.detail.innerHTML =
+      '<header class="detail-head"><div><div class="detail-kicker"><span class="status-pill ' + call.status + '">' + statusLabel(call.status) + '</span><span>' + escapeHtml(call.timestampRaw) + '</span></div><h2>' + escapeHtml(call.model) + '</h2><p>' + escapeHtml(call.endpoint) + ' · ' + escapeHtml(call.sourceName) + ':' + call.lineStart + '</p></div><div class="duration"><span>Round trip</span><strong>' + escapeHtml(formatDuration(call.durationMs)) + "</strong></div></header>" +
+      ancestry +
+      '<section class="section"><div class="section-title"><div><span>01</span><h3>Request messages</h3></div><small>' + call.messages.length + ' total</small></div><div class="messages">' + call.messages.map(message => renderMessage(message, call)).join("") + "</div></section>" +
+      '<section class="section response-section"><div class="section-title"><div><span>02</span><h3>Response</h3></div><small>' + escapeHtml(call.finishReason || statusLabel(call.status)) + "</small></div>" +
+      (call.response ? '<div class="response-grid">' + detailBlock("Content", output.content, { open: true, showEmpty: true, copyKey: "response-content" }) + detailBlock("Reasoning", output.reasoning_content, { open: !!output.reasoning_content, copyKey: "response-reasoning" }) + detailBlock("Tool calls", output.tool_calls, { open: !!output.tool_calls, copyKey: "response-tools" }) + '</div><div class="usage-row"><span>Prompt <strong>' + formatNumber(call.usage && call.usage.prompt_tokens) + '</strong></span><span>Completion <strong>' + formatNumber(call.usage && call.usage.completion_tokens) + '</strong></span><span>Total <strong>' + formatNumber(call.usage && call.usage.total_tokens) + "</strong></span></div>" : '<div class="incomplete-panel"><strong>No prediction was recorded.</strong><p>The request may have been rejected, cancelled, interrupted, or still pending when logging stopped.</p></div>') + "</section>" +
+      '<section class="section"><div class="section-title"><div><span>03</span><h3>Evidence</h3></div><small>Original log data</small></div>' + detailBlock("Request JSON", call.request, { copyKey: "request-json" }) + detailBlock("Response JSON", call.response, { copyKey: "response-json" }) + detailBlock("Linked raw context · lines " + call.rawContext.from + "–" + call.rawContext.to, call.rawContext.text, { copyKey: "raw-context" }) + "</section>";
+
+    els.detail.querySelectorAll("[data-copy-message]").forEach(button => button.addEventListener("click", event => { event.preventDefault(); copyText(contentText(call.messages[Number(button.dataset.copyMessage)].content)); }));
+    const copyMap = { "response-content": output.content, "response-reasoning": output.reasoning_content, "response-tools": output.tool_calls, "request-json": call.request, "response-json": call.response, "raw-context": call.rawContext.text };
+    els.detail.querySelectorAll("[data-copy]").forEach(button => button.addEventListener("click", event => { event.preventDefault(); copyText(contentText(copyMap[button.dataset.copy])); }));
+  }
+
+  function render() {
+    if (!state.result) return clearAll();
+    els.shell.classList.remove("empty"); els.welcome.hidden = true; els.workspace.hidden = false; els.clear.disabled = false;
+    renderStats(); renderList(); renderDetail();
+  }
+
+  [els.open, els.welcomeOpen].forEach(button => button.addEventListener("click", () => els.input.click()));
+  els.input.addEventListener("change", () => loadFiles(els.input.files));
+  els.clear.addEventListener("click", clearAll);
+  els.search.addEventListener("input", () => { state.query = els.search.value.trim().toLowerCase(); renderList(); });
+  els.status.addEventListener("change", () => { state.status = els.status.value; renderList(); });
+  els.model.addEventListener("change", () => { state.model = els.model.value; renderList(); });
+  ["dragenter", "dragover"].forEach(type => document.addEventListener(type, event => { event.preventDefault(); els.shell.classList.add("dragging"); }));
+  ["dragleave", "drop"].forEach(type => document.addEventListener(type, event => { event.preventDefault(); els.shell.classList.remove("dragging"); }));
+  document.addEventListener("drop", event => loadFiles(event.dataTransfer.files));
+})();

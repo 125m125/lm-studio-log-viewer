@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>LM Studio Log Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">LM</div>
+      <div><h1>Log Viewer</h1><p>Requests, responses, and conversation ancestry</p></div>
+    </div>
+    <div class="top-actions">
+      <button id="open-files" class="button primary" type="button">Open log files</button>
+      <input id="file-input" type="file" accept=".log,.txt,text/plain" multiple hidden>
+      <button id="clear-files" class="button ghost" type="button" disabled>Clear</button>
+    </div>
+  </header>
+
+  <main id="app-shell" class="app-shell empty">
+    <section id="drop-zone" class="welcome" aria-label="Drop log files here">
+      <div class="welcome-orbit" aria-hidden="true"><span></span></div>
+      <p class="eyebrow">100% local · zero uploads</p>
+      <h2>Turn dense server logs into readable conversations.</h2>
+      <p class="lede">Drop one or more LM Studio server logs here, or open them with the file picker. Everything stays in this browser tab.</p>
+      <button id="welcome-open" class="button primary large" type="button">Choose log files</button>
+      <p class="sample-path">Validation log: <code>C:\Users\fabia\.lmstudio\server-logs\2026-06\2026-06-27.2.log</code></p>
+    </section>
+
+    <section id="workspace" class="workspace" hidden>
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <label class="search-box">
+            <span aria-hidden="true">⌕</span>
+            <input id="search" type="search" placeholder="Search every message" autocomplete="off">
+          </label>
+          <div class="filters">
+            <select id="status-filter" aria-label="Filter by status"><option value="all">All states</option><option value="matched">Matched</option><option value="incomplete">Incomplete</option><option value="uncertain">Uncertain</option></select>
+            <select id="model-filter" aria-label="Filter by model"><option value="all">All models</option></select>
+          </div>
+        </div>
+        <div id="thread-list" class="thread-list" aria-live="polite"></div>
+      </aside>
+
+      <section class="content">
+        <div id="stats" class="stats"></div>
+        <article id="detail" class="detail"></article>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="parser.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
