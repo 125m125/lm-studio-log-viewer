@@ -11,6 +11,12 @@ function run(time, model, count) {
 function response(time, body) {
   return `[${time}][INFO][${body.model}] Generated prediction: ${JSON.stringify(body, null, 2)}`;
 }
+function packet(time, model, body) {
+  return `[${time}][INFO][${model}] Generated packet: ${JSON.stringify(body, null, 2)}`;
+}
+function finished(time, model) {
+  return `[${time}][INFO][${model}] Finished streaming response`;
+}
 function prediction(model, content = "ok") {
   return { model, choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } };
 }
@@ -29,6 +35,30 @@ test("parses and matches multiline request and prediction", () => {
   assert.equal(result.calls[0].outputMessage.content, "done");
   assert.equal(result.calls[0].matchMethod, "lifecycle");
   assert.equal(result.calls[0].endpoint, "POST to /v1/chat/completions");
+});
+
+test("reconstructs a complete streamed response and keeps its packets", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 11:00:00", { model, stream: true, messages: [{ role: "user", content: "say hello" }] }),
+    run("2026-06-27 11:00:01", model, 1),
+    packet("2026-06-27 11:00:02", model, { id: "stream-1", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { role: "assistant", content: "Hello" }, finish_reason: null }] }),
+    packet("2026-06-27 11:00:02", model, { id: "stream-1", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { content: " world" }, finish_reason: null }] }),
+    packet("2026-06-27 11:00:03", model, { id: "stream-1", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }),
+    packet("2026-06-27 11:00:03", model, { id: "stream-1", object: "chat.completion.chunk", model, choices: [], usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 } }),
+    finished("2026-06-27 11:00:03", model)
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "stream.log", text }]);
+  const call = result.calls[0];
+  assert.equal(result.stats.calls, 1);
+  assert.equal(call.status, "matched");
+  assert.equal(call.stream, true);
+  assert.equal(call.streamComplete, true);
+  assert.equal(call.streamPackets.length, 4);
+  assert.equal(call.outputMessage.content, "Hello world");
+  assert.equal(call.finishReason, "stop");
+  assert.deepEqual(call.usage, { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 });
 });
 
 test("leaves a rejected request incomplete instead of shifting matches", () => {

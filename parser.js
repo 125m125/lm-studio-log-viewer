@@ -7,6 +7,8 @@
 
   const REQUEST_MARKER = "Received request:";
   const RESPONSE_MARKER = "Generated prediction:";
+  const STREAM_PACKET_MARKER = "Generated packet:";
+  const STREAM_FINISHED_MARKER = "Finished streaming response";
   const RUN_RE = /^\[([^\]]+)\]\[INFO\]\[([^\]]+)\] Running chat completion on conversation with (\d+) messages\./;
   const HEADER_RE = /^\[([^\]]+)\]\[([A-Z]+)\](?:\[([^\]]+)\])?\s?(.*)$/;
 
@@ -95,6 +97,36 @@
     return normalized;
   }
 
+  function appendStringField(target, field, value) {
+    if (typeof value !== "string" || !value) return;
+    target[field] = (target[field] || "") + value;
+  }
+
+  function aggregateStream(group) {
+    const message = { role: "assistant" };
+    let finishReason = null;
+    let usage = null;
+    for (const packet of group.packets) {
+      const choice = packet && Array.isArray(packet.choices) ? packet.choices[0] : null;
+      const delta = choice && choice.delta || null;
+      if (delta) {
+        if (delta.role && !message.role) message.role = delta.role;
+        appendStringField(message, "content", delta.content);
+        appendStringField(message, "reasoning_content", delta.reasoning_content);
+      }
+      if (choice && choice.finish_reason != null) finishReason = choice.finish_reason;
+      if (packet && packet.usage) usage = packet.usage;
+    }
+    const response = {
+      id: group.id || null,
+      object: "chat.completion",
+      model: group.model || null,
+      choices: [{ index: 0, message, finish_reason: finishReason }],
+      usage
+    };
+    return { response, outputMessage: message, finishReason, usage };
+  }
+
   function contextFor(lines, start, end, radius) {
     const from = Math.max(0, start - 1 - radius);
     const to = Math.min(lines.length, end + radius);
@@ -103,7 +135,7 @@
 
   function parseSource(source) {
     const lines = source.text.replace(/^\uFEFF/, "").split(/\r?\n/);
-    const requests = [], responses = [], runs = [], warnings = [];
+    const requests = [], responses = [], runs = [], streamPackets = [], streamFinished = [], warnings = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (line.includes(REQUEST_MARKER)) {
@@ -120,10 +152,100 @@
           if (event.error) warnings.push({ sourceName: source.name, line: event.lineStart, message: event.error });
           i = event.lineEnd - 1;
         }
+      } else if (line.includes(STREAM_PACKET_MARKER)) {
+        const event = eventFromMarker(lines, i, STREAM_PACKET_MARKER, "stream-packet", source);
+        if (event) {
+          streamPackets.push(event);
+          if (event.error) warnings.push({ sourceName: source.name, line: event.lineStart, message: event.error });
+          i = event.lineEnd - 1;
+        }
+      } else if (line.includes(STREAM_FINISHED_MARKER)) {
+        const header = HEADER_RE.exec(line);
+        if (header) streamFinished.push({
+          line: i + 1,
+          timestampRaw: header[1],
+          timestamp: parseTimestamp(header[1]),
+          model: header[3] || null
+        });
       } else {
         const run = RUN_RE.exec(line);
         if (run) runs.push({ line: i + 1, timestampRaw: run[1], timestamp: parseTimestamp(run[1]), model: run[2], messageCount: Number(run[3]) });
       }
+    }
+
+    const streamGroups = [];
+    const streamGroupsById = new Map();
+    for (const packetEvent of streamPackets) {
+      const packet = packetEvent.data || {};
+      const id = packet.id || packetEvent.id;
+      let group = streamGroupsById.get(id);
+      if (!group) {
+        group = {
+          id,
+          model: packet.model || null,
+          packets: [],
+          packetEvents: [],
+          lineStart: packetEvent.lineStart,
+          lineEnd: packetEvent.lineEnd,
+          timestampRaw: packetEvent.timestampRaw,
+          timestamp: packetEvent.timestamp,
+          latestTimestampRaw: packetEvent.timestampRaw,
+          latestTimestamp: packetEvent.timestamp,
+          finished: null,
+          complete: false
+        };
+        streamGroupsById.set(id, group);
+        streamGroups.push(group);
+      }
+      group.model = group.model || packet.model || null;
+      group.packets.push(packet);
+      group.packetEvents.push(packetEvent);
+      group.lineEnd = packetEvent.lineEnd;
+      group.latestTimestampRaw = packetEvent.timestampRaw;
+      group.latestTimestamp = packetEvent.timestamp;
+      const choice = Array.isArray(packet.choices) ? packet.choices[0] : null;
+      if (choice && choice.finish_reason != null) group.complete = true;
+      if (packet.usage) group.complete = true;
+    }
+
+    for (const finished of streamFinished) {
+      const candidates = streamGroups.filter(group =>
+        !group.finished &&
+        group.lineEnd < finished.line &&
+        (!finished.model || !group.model || group.model === finished.model)
+      );
+      if (candidates.length) {
+        const group = candidates[candidates.length - 1];
+        group.finished = finished;
+      }
+    }
+
+    for (const group of streamGroups) {
+      const aggregate = aggregateStream(group);
+      responses.push({
+        id: "stream-response-" + source.index + "-" + group.id,
+        kind: "response",
+        data: aggregate.response,
+        error: group.packetEvents.find(event => event.error)?.error || null,
+        sourceName: source.name,
+        sourceIndex: source.index,
+        markerLine: group.packetEvents[0] ? group.packetEvents[0].markerLine : "",
+        lineStart: group.lineStart,
+        lineEnd: group.finished ? group.finished.line : group.lineEnd,
+        timestampRaw: group.finished ? group.finished.timestampRaw : group.latestTimestampRaw,
+        timestamp: group.finished ? group.finished.timestamp : group.latestTimestamp,
+        raw: group.packetEvents.map(event => event.raw).join("\n"),
+        complete: Boolean(group.complete || group.finished),
+        stream: {
+          id: group.id,
+          packets: group.packets,
+          packetEvents: group.packetEvents,
+          finished: group.finished,
+          aggregate,
+          complete: Boolean(group.complete),
+          hasFinishedMarker: Boolean(group.finished)
+        }
+      });
     }
 
     // A run marker appears after the complete request body. Associate it with the
@@ -137,10 +259,20 @@
     const pendingStarted = requests.filter(r => r.run).sort((a, b) => a.run.line - b.run.line);
     const fallbackPending = requests.filter(r => !r.run);
     for (const response of responses) {
-      let request = pendingStarted.find(r => !r.response && r.lineStart < response.lineStart);
+      const eligibleStarted = pendingStarted.filter(r =>
+        !r.response &&
+        r.lineStart < response.lineStart &&
+        (!response.stream || (r.data && r.data.stream === true && (!response.data || !response.data.model || !r.data.model || r.data.model === response.data.model)))
+      );
+      let request = eligibleStarted[eligibleStarted.length - 1] || null;
       let method = "lifecycle", confidence = "high";
       if (!request) {
-        request = fallbackPending.find(r => !r.response && r.lineStart < response.lineStart);
+        const eligibleFallback = fallbackPending.filter(r =>
+          !r.response &&
+          r.lineStart < response.lineStart &&
+          (!response.stream || (r.data && r.data.stream === true && (!response.data || !response.data.model || !r.data.model || r.data.model === response.data.model)))
+        );
+        request = eligibleFallback[eligibleFallback.length - 1] || null;
         method = "chronological"; confidence = "uncertain";
       }
       if (request) { request.response = response; request.matchMethod = method; request.matchConfidence = confidence; }
@@ -153,7 +285,9 @@
       const messages = Array.isArray(body.messages) ? body.messages.map(normalizeMessage) : [];
       const responseBody = response && response.data;
       const choice = responseBody && Array.isArray(responseBody.choices) ? responseBody.choices[0] : null;
-      const status = !response ? "incomplete" : request.matchConfidence === "uncertain" ? "uncertain" : "matched";
+      const streamInfo = response && response.stream || null;
+      const streamComplete = streamInfo ? Boolean(streamInfo.complete || streamInfo.hasFinishedMarker) : false;
+      const status = !response ? "incomplete" : streamInfo && !streamComplete ? "incomplete" : request.matchConfidence === "uncertain" ? "uncertain" : "matched";
       const endTime = response && response.timestamp;
       return {
         id: "call-" + source.index + "-" + (index + 1), sourceName: source.name, sourceIndex: source.index,
@@ -164,6 +298,8 @@
         responseRaw: response ? response.raw : null, responseLineStart: response ? response.lineStart : null,
         outputMessage: choice && choice.message || null, finishReason: choice && choice.finish_reason || null,
         usage: responseBody && responseBody.usage || null, status,
+        streamPackets: streamInfo ? streamInfo.packets : [],
+        streamComplete,
         matchMethod: request.matchMethod || null, matchConfidence: request.matchConfidence || null,
         durationMs: request.timestamp != null && endTime != null ? Math.max(0, endTime - request.timestamp) : null,
         rawContext: contextFor(lines, request.lineStart, response ? response.lineEnd : request.lineEnd, 12),
