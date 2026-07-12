@@ -134,6 +134,10 @@
     return { from: from + 1, to, text: lines.slice(from, to).join("\n") };
   }
 
+  function isStreamRequest(request) {
+    return Boolean(request && request.data && request.data.stream === true);
+  }
+
   function parseSource(source) {
     const lines = source.text.replace(/^\uFEFF/, "").split(/\r?\n/);
     const requests = [], responses = [], runs = [], streamPackets = [], streamFinished = [], warnings = [];
@@ -262,20 +266,23 @@
     const pendingStarted = requests.filter(r => r.run).sort((a, b) => a.run.line - b.run.line);
     const fallbackPending = requests.filter(r => !r.run);
     for (const response of responses) {
-      const eligibleStarted = pendingStarted.filter(r =>
+      const isStreamResponse = Boolean(response.stream);
+      const baseStarted = pendingStarted.filter(r =>
         !r.response &&
         r.lineStart < response.lineStart &&
-        (!response.stream || (r.data && r.data.stream === true && (!response.data || !response.data.model || !r.data.model || r.data.model === response.data.model)))
+        (!response.data || !response.data.model || !r.data.model || r.data.model === response.data.model)
       );
-      let request = eligibleStarted[eligibleStarted.length - 1] || null;
+      const preferredStarted = baseStarted.filter(r => isStreamResponse ? isStreamRequest(r) : !isStreamRequest(r));
+      let request = (preferredStarted.length ? preferredStarted : baseStarted).at(-1) || null;
       let method = "lifecycle", confidence = "high";
       if (!request) {
-        const eligibleFallback = fallbackPending.filter(r =>
+        const baseFallback = fallbackPending.filter(r =>
           !r.response &&
           r.lineStart < response.lineStart &&
-          (!response.stream || (r.data && r.data.stream === true && (!response.data || !response.data.model || !r.data.model || r.data.model === response.data.model)))
+          (!response.data || !response.data.model || !r.data.model || r.data.model === response.data.model)
         );
-        request = eligibleFallback[eligibleFallback.length - 1] || null;
+        const preferredFallback = baseFallback.filter(r => isStreamResponse ? isStreamRequest(r) : !isStreamRequest(r));
+        request = (preferredFallback.length ? preferredFallback : baseFallback).at(-1) || null;
         method = "chronological"; confidence = "uncertain";
       }
       if (request) { request.response = response; request.matchMethod = method; request.matchConfidence = confidence; }

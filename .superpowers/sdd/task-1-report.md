@@ -249,3 +249,103 @@ Planned commit message:
 ```text
 fix: tighten streamed response matching
 ```
+
+---
+
+## Final reviewer follow-up
+
+Status: DONE
+
+Scope:
+- Modified `tests/parser.test.js`
+- Modified `parser.js`
+- Appended this report entry
+- Preserved unrelated worktree changes (`docs/superpowers/plans/` remained untouched)
+
+### Reviewed issue addressed
+
+- Ordinary `Generated prediction:` responses now prefer unmatched preceding ordinary requests where `body.stream !== true`.
+- Synthesized stream responses continue to prefer unmatched preceding streamed requests where `body.stream === true`.
+- If no preferred candidate exists, matching falls back to the previous candidate pool so older behavior remains available as a fallback path.
+- Requests with absent `stream` fields are treated as ordinary requests.
+
+### RED evidence for final reviewer fix
+
+Command:
+
+```powershell
+node --test tests/parser.test.js --test-name-pattern="prefers ordinary requests for ordinary responses when a streamed request is newer"
+```
+
+Result:
+
+```text
+not ok 5 - prefers ordinary requests for ordinary responses when a streamed request is newer
+  error: "Cannot read properties of null (reading 'content')"
+```
+
+Interpretation:
+- The ordinary `Generated prediction:` response was still attaching to the newer streamed request, leaving the ordinary request without an output message.
+
+### Regression test added
+
+- `prefers ordinary requests for ordinary responses when a streamed request is newer`
+  - fixture order: ordinary request, streamed request, ordinary response, streamed packet response
+  - asserts the ordinary response stays on the ordinary call
+  - asserts the streamed packet response stays on the streamed call
+
+### Implementation summary for final reviewer fix
+
+In `parser.js` I added:
+
+- `isStreamRequest(request)` helper to classify requests by `body.stream === true`
+
+I then updated the matching loop to:
+
+- build the base eligible candidate set by time/model first
+- prefer:
+  - ordinary requests for ordinary responses
+  - streamed requests for synthesized stream responses
+- fall back to the base eligible set only when no preferred candidate exists
+
+This keeps absent or false `stream` fields in the ordinary-request bucket.
+
+### GREEN evidence for final reviewer fix
+
+Focused regression command:
+
+```powershell
+node --test tests/parser.test.js --test-name-pattern="prefers ordinary requests for ordinary responses when a streamed request is newer"
+```
+
+Result:
+
+```text
+1..11
+# tests 11
+# pass 11
+# fail 0
+```
+
+Full parser suite command:
+
+```powershell
+node --test tests/parser.test.js
+```
+
+Result:
+
+```text
+1..11
+# tests 11
+# pass 11
+# fail 0
+```
+
+### Fix commit
+
+Planned commit message:
+
+```text
+fix: prefer ordinary matches for ordinary responses
+```

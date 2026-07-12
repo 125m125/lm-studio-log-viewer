@@ -97,6 +97,26 @@ test("matches ordinary and streamed responses by source order", () => {
   assert.equal(result.calls[1].status, "matched");
 });
 
+test("prefers ordinary requests for ordinary responses when a streamed request is newer", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 12:10:00", { model, messages: [{ role: "user", content: "ordinary first" }] }),
+    run("2026-06-27 12:10:01", model, 1),
+    request("2026-06-27 12:10:02", { model, stream: true, messages: [{ role: "user", content: "stream second" }] }),
+    run("2026-06-27 12:10:03", model, 1),
+    response("2026-06-27 12:10:04", prediction(model, "ordinary result")),
+    packet("2026-06-27 12:10:05", model, { id: "stream-later", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { role: "assistant", content: "stream result" }, finish_reason: "stop" }] })
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "inverse-mixed.log", text }]);
+  assert.equal(result.calls[0].stream, false);
+  assert.equal(result.calls[0].outputMessage.content, "ordinary result");
+  assert.equal(result.calls[1].stream, true);
+  assert.equal(result.calls[1].outputMessage.content, "stream result");
+  assert.equal(result.calls[0].status, "matched");
+  assert.equal(result.calls[1].status, "matched");
+});
+
 test("leaves a rejected request incomplete instead of shifting matches", () => {
   const model = "test/model";
   const text = [
