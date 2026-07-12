@@ -61,6 +61,55 @@ test("reconstructs a complete streamed response and keeps its packets", () => {
   assert.deepEqual(call.usage, { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 });
 });
 
+test("preserves streamed reasoning and tool-call deltas while assembling output", () => {
+  const model = "test/model";
+  const firstToolDelta = { index: 0, id: "call-1", type: "function", function: { name: "lookup", arguments: '{"q":' } };
+  const secondToolDelta = { index: 0, function: { arguments: '"weather"}' } };
+  const text = [
+    request("2026-06-27 12:00:00", { model, stream: true, messages: [{ role: "user", content: "weather" }] }),
+    run("2026-06-27 12:00:01", model, 1),
+    packet("2026-06-27 12:00:02", model, { id: "stream-2", model, choices: [{ index: 0, delta: { reasoning_content: "Need " }, finish_reason: null }] }),
+    packet("2026-06-27 12:00:02", model, { id: "stream-2", model, choices: [{ index: 0, delta: { reasoning_content: "data", tool_calls: [firstToolDelta] }, finish_reason: null }] }),
+    packet("2026-06-27 12:00:02", model, { id: "stream-2", model, choices: [{ index: 0, delta: { content: "Done", tool_calls: [secondToolDelta] }, finish_reason: null }] }),
+    packet("2026-06-27 12:00:03", model, { id: "stream-2", model, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }),
+    finished("2026-06-27 12:00:03", model)
+  ].join("\n");
+
+  const call = parser.parseFiles([{ name: "delta.log", text }]).calls[0];
+  assert.equal(call.outputMessage.reasoning_content, "Need data");
+  assert.equal(call.outputMessage.content, "Done");
+  assert.equal(call.outputMessage.tool_calls[0].function.arguments, '{"q":"weather"}');
+  assert.deepEqual(call.streamPackets[1].data.choices[0].delta.tool_calls, [firstToolDelta]);
+  assert.equal(call.finishReason, "tool_calls");
+});
+
+test("keeps a partial streamed response visible and incomplete", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 13:00:00", { model, stream: true, messages: [{ role: "user", content: "continue" }] }),
+    run("2026-06-27 13:00:01", model, 1),
+    packet("2026-06-27 13:00:02", model, { id: "stream-partial", model, choices: [{ index: 0, delta: { content: "Still working" }, finish_reason: null }] })
+  ].join("\n");
+
+  const call = parser.parseFiles([{ name: "partial.log", text }]).calls[0];
+  assert.equal(call.outputMessage.content, "Still working");
+  assert.equal(call.streamComplete, false);
+  assert.equal(call.status, "incomplete");
+});
+
+test("reports malformed streamed packet JSON without throwing", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 14:00:00", { model, stream: true, messages: [{ role: "user", content: "broken" }] }),
+    run("2026-06-27 14:00:01", model, 1),
+    `[2026-06-27 14:00:02][INFO][${model}] Generated packet: {\n  "id": "stream-broken",\n  "choices": [`
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "broken-stream.log", text }]);
+  assert.equal(result.calls.length, 1);
+  assert.match(result.warnings.map(warning => warning.message).join("\n"), /truncated/i);
+});
+
 test("keeps a usage-bearing stream incomplete without a terminal chunk or finished boundary", () => {
   const model = "test/model";
   const text = [

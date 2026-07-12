@@ -102,6 +102,19 @@
     target[field] = (target[field] || "") + value;
   }
 
+  function appendToolCallFragments(target, fragments) {
+    for (const fragment of Array.isArray(fragments) ? fragments : []) {
+      const index = Number.isInteger(fragment.index) ? fragment.index : target.length;
+      const call = target[index] || { index, function: {} };
+      if (fragment.id != null) call.id = (call.id || "") + fragment.id;
+      if (fragment.type != null) call.type = fragment.type;
+      const fn = fragment.function || {};
+      if (fn.name != null) call.function.name = (call.function.name || "") + fn.name;
+      if (fn.arguments != null) call.function.arguments = (call.function.arguments || "") + fn.arguments;
+      target[index] = call;
+    }
+  }
+
   function aggregateStream(group) {
     const message = {};
     let finishReason = null;
@@ -113,6 +126,10 @@
         if (delta.role && !message.role) message.role = delta.role;
         appendStringField(message, "content", delta.content);
         appendStringField(message, "reasoning_content", delta.reasoning_content);
+        if (delta.tool_calls) {
+          if (!Array.isArray(message.tool_calls)) message.tool_calls = [];
+          appendToolCallFragments(message.tool_calls, delta.tool_calls);
+        }
       }
       if (choice && choice.finish_reason != null) finishReason = choice.finish_reason;
       if (packet && packet.usage) usage = packet.usage;
@@ -313,7 +330,7 @@
         responseRaw: response ? response.raw : null, responseLineStart: response ? response.lineStart : null,
         outputMessage: choice && choice.message || null, finishReason: choice && choice.finish_reason || null,
         usage: responseBody && responseBody.usage || null, status,
-        streamPackets: streamInfo ? streamInfo.packets : [],
+        streamPackets: streamInfo ? streamInfo.packetEvents : [],
         streamComplete,
         matchMethod: request.matchMethod || null, matchConfidence: request.matchConfidence || null,
         durationMs: request.timestamp != null && endTime != null ? Math.max(0, endTime - request.timestamp) : null,
