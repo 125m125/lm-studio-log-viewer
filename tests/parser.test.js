@@ -78,6 +78,21 @@ test("keeps a usage-bearing stream incomplete without a terminal chunk or finish
   assert.deepEqual(call.usage, { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 });
 });
 
+test("keeps a usage-only packet stream incomplete without a finish chunk or boundary", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 11:06:00", { model, stream: true, messages: [{ role: "user", content: "usage only please" }] }),
+    run("2026-06-27 11:06:01", model, 1),
+    packet("2026-06-27 11:06:02", model, { id: "stream-usage-only-open", object: "chat.completion.chunk", model, choices: [], usage: { prompt_tokens: 2, completion_tokens: 0, total_tokens: 2 } })
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "stream-usage-only-open.log", text }]);
+  const call = result.calls[0];
+  assert.equal(call.streamComplete, false);
+  assert.equal(call.status, "incomplete");
+  assert.deepEqual(call.usage, { prompt_tokens: 2, completion_tokens: 0, total_tokens: 2 });
+});
+
 test("matches ordinary and streamed responses by source order", () => {
   const model = "test/model";
   const text = [
@@ -137,6 +152,22 @@ test("reports truncated JSON without throwing", () => {
   assert.equal(result.calls[0].status, "incomplete");
   assert.match(result.calls[0].parseError, /truncated/i);
   assert.equal(result.warnings.length, 1);
+});
+
+test("keeps matching null-safe when a malformed request precedes a valid one", () => {
+  const model = "test/model";
+  const text = [
+    "[2026-06-27 10:20:00][DEBUG] Received request: POST to /v1/chat/completions with body { invalid }",
+    request("2026-06-27 10:20:01", { model, messages: [{ role: "user", content: "valid request" }] }),
+    run("2026-06-27 10:20:02", model, 1),
+    response("2026-06-27 10:20:03", prediction(model, "valid result"))
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "null-safe.log", text }]);
+  assert.equal(result.stats.calls, 2);
+  assert.equal(result.calls[0].status, "incomplete");
+  assert.equal(result.calls[1].status, "matched");
+  assert.equal(result.calls[1].outputMessage.content, "valid result");
 });
 
 test("groups continuations and describes removed and added messages", () => {

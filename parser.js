@@ -135,7 +135,8 @@
   }
 
   function isStreamRequest(request) {
-    return Boolean(request && request.data && request.data.stream === true);
+    const body = request && request.data || {};
+    return body.stream === true;
   }
 
   function parseSource(source) {
@@ -209,9 +210,7 @@
       group.latestTimestampRaw = packetEvent.timestampRaw;
       group.latestTimestamp = packetEvent.timestamp;
       const choice = Array.isArray(packet.choices) ? packet.choices[0] : null;
-      const usageOnlyTerminal = Boolean(packet.usage) && Array.isArray(packet.choices) && packet.choices.length === 0;
       if (choice && choice.finish_reason != null) group.complete = true;
-      if (usageOnlyTerminal) group.complete = true;
     }
 
     for (const finished of streamFinished) {
@@ -268,18 +267,24 @@
     for (const response of responses) {
       const isStreamResponse = Boolean(response.stream);
       const baseStarted = pendingStarted.filter(r =>
-        !r.response &&
-        r.lineStart < response.lineStart &&
-        (!response.data || !response.data.model || !r.data.model || r.data.model === response.data.model)
+        {
+          const body = r.data || {};
+          return !r.response &&
+            r.lineStart < response.lineStart &&
+            (!response.data || !response.data.model || !body.model || body.model === response.data.model);
+        }
       );
       const preferredStarted = baseStarted.filter(r => isStreamResponse ? isStreamRequest(r) : !isStreamRequest(r));
       let request = (preferredStarted.length ? preferredStarted : baseStarted).at(-1) || null;
       let method = "lifecycle", confidence = "high";
       if (!request) {
         const baseFallback = fallbackPending.filter(r =>
-          !r.response &&
-          r.lineStart < response.lineStart &&
-          (!response.data || !response.data.model || !r.data.model || r.data.model === response.data.model)
+          {
+            const body = r.data || {};
+            return !r.response &&
+              r.lineStart < response.lineStart &&
+              (!response.data || !response.data.model || !body.model || body.model === response.data.model);
+          }
         );
         const preferredFallback = baseFallback.filter(r => isStreamResponse ? isStreamRequest(r) : !isStreamRequest(r));
         request = (preferredFallback.length ? preferredFallback : baseFallback).at(-1) || null;
