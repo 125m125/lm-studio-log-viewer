@@ -103,7 +103,7 @@
   }
 
   function aggregateStream(group) {
-    const message = { role: "assistant" };
+    const message = {};
     let finishReason = null;
     let usage = null;
     for (const packet of group.packets) {
@@ -117,6 +117,7 @@
       if (choice && choice.finish_reason != null) finishReason = choice.finish_reason;
       if (packet && packet.usage) usage = packet.usage;
     }
+    if (!message.role) message.role = "assistant";
     const response = {
       id: group.id || null,
       object: "chat.completion",
@@ -204,8 +205,9 @@
       group.latestTimestampRaw = packetEvent.timestampRaw;
       group.latestTimestamp = packetEvent.timestamp;
       const choice = Array.isArray(packet.choices) ? packet.choices[0] : null;
+      const usageOnlyTerminal = Boolean(packet.usage) && Array.isArray(packet.choices) && packet.choices.length === 0;
       if (choice && choice.finish_reason != null) group.complete = true;
-      if (packet.usage) group.complete = true;
+      if (usageOnlyTerminal) group.complete = true;
     }
 
     for (const finished of streamFinished) {
@@ -247,6 +249,7 @@
         }
       });
     }
+    responses.sort((a, b) => (a.lineStart - b.lineStart) || (a.sourceIndex - b.sourceIndex) || (a.timestamp ?? 0) - (b.timestamp ?? 0));
 
     // A run marker appears after the complete request body. Associate it with the
     // nearest preceding request that has not already started; this correctly leaves

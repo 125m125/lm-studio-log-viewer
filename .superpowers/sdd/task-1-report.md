@@ -126,3 +126,126 @@ feat: reconstruct streamed log responses
 ### Concerns
 
 - None at this task scope.
+
+---
+
+## Reviewer fix follow-up
+
+Status: DONE
+
+Scope:
+- Modified `tests/parser.test.js`
+- Modified `parser.js`
+- Appended this report entry
+- Preserved unrelated worktree changes (`docs/superpowers/plans/` remained untouched)
+
+### Reviewed issues addressed
+
+1. Tightened stream completion:
+   - usage by itself no longer marks a stream complete
+   - completion now requires one of:
+     - a non-null `finish_reason`
+     - a `Finished streaming response` boundary
+     - a usage-only terminal packet with `choices: []`
+2. Restored chronological/stable matching:
+   - synthesized stream response events are sorted together with ordinary responses by source line before the matching loop
+   - ordinary `Generated prediction` matching now stays stable in mixed ordinary/stream logs
+3. Fixed synthesized role defaulting:
+   - streamed role is taken from delta packets first
+   - synthesized role defaults to `"assistant"` only if no delta role was ever provided
+
+### RED evidence for reviewer fixes
+
+Command:
+
+```powershell
+node --test tests/parser.test.js --test-name-pattern="usage-bearing stream incomplete|matches ordinary and streamed responses by source order"
+```
+
+Result:
+
+```text
+not ok 3 - keeps a usage-bearing stream incomplete without a terminal chunk or finished boundary
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + 'matched'
+    - 'incomplete'
+
+not ok 4 - matches ordinary and streamed responses by source order
+  error: "Cannot read properties of null (reading 'content')"
+```
+
+Interpretation:
+- The first regression showed the parser was still treating any usage-bearing stream packet as terminal.
+- The second regression showed mixed ordering was unstable: the ordinary response could no longer be matched to its intended request once stream responses were appended after ordinary ones.
+
+### Regression tests added
+
+- `keeps a usage-bearing stream incomplete without a terminal chunk or finished boundary`
+  - proves a usage-bearing non-terminal packet remains `incomplete`
+  - also proves the synthesized role comes from the delta (`tool`) instead of being hardcoded to assistant
+- `matches ordinary and streamed responses by source order`
+  - proves a streamed terminal chunk that appears earlier in the log is matched before a later ordinary response
+  - prevents ordinary predictions from stealing streamed requests
+
+### Implementation summary for reviewer fixes
+
+In `parser.js` I changed:
+
+- `aggregateStream(group)`:
+  - start synthesized messages without a preset role
+  - apply `delta.role` when present
+  - default role to `"assistant"` only after all packets are processed
+- stream terminal detection:
+  - replaced `if (packet.usage) group.complete = true`
+  - with `usageOnlyTerminal = packet.usage && packet.choices.length === 0`
+- response matching order:
+  - sort the combined `responses` array by source line before the existing matching loop
+
+### GREEN evidence for reviewer fixes
+
+Focused regression command:
+
+```powershell
+node --test tests/parser.test.js --test-name-pattern="usage-bearing stream incomplete|matches ordinary and streamed responses by source order"
+```
+
+Result:
+
+```text
+1..10
+# tests 10
+# pass 10
+# fail 0
+```
+
+Full parser suite command:
+
+```powershell
+node --test tests/parser.test.js
+```
+
+Result:
+
+```text
+1..10
+# tests 10
+# pass 10
+# fail 0
+```
+
+### Self-review notes for reviewer fixes
+
+- The original complete streamed fixture still passes, so the stricter terminal logic preserved the approved happy path.
+- The new non-terminal usage test covers both completion semantics and streamed role aggregation.
+- Sorting responses by line preserves the existing matching algorithm while restoring chronological stability.
+
+### Fix commit
+
+Planned commit message:
+
+```text
+fix: tighten streamed response matching
+```

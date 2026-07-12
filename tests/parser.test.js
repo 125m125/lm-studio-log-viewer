@@ -61,6 +61,42 @@ test("reconstructs a complete streamed response and keeps its packets", () => {
   assert.deepEqual(call.usage, { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 });
 });
 
+test("keeps a usage-bearing stream incomplete without a terminal chunk or finished boundary", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 11:05:00", { model, stream: true, messages: [{ role: "user", content: "partial please" }] }),
+    run("2026-06-27 11:05:01", model, 1),
+    packet("2026-06-27 11:05:02", model, { id: "stream-usage-open", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { role: "tool", content: "Partial" }, finish_reason: null }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } })
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "stream-open.log", text }]);
+  const call = result.calls[0];
+  assert.equal(call.status, "incomplete");
+  assert.equal(call.streamComplete, false);
+  assert.equal(call.outputMessage.role, "tool");
+  assert.equal(call.outputMessage.content, "Partial");
+  assert.deepEqual(call.usage, { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 });
+});
+
+test("matches ordinary and streamed responses by source order", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 12:00:00", { model, messages: [{ role: "user", content: "ordinary request" }] }),
+    run("2026-06-27 12:00:01", model, 1),
+    request("2026-06-27 12:00:02", { model, stream: true, messages: [{ role: "user", content: "stream request" }] }),
+    run("2026-06-27 12:00:03", model, 1),
+    packet("2026-06-27 12:00:04", model, { id: "stream-ordered", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { role: "assistant", content: "streamed first" }, finish_reason: "stop" }] }),
+    response("2026-06-27 12:00:05", prediction(model, "ordinary second"))
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "mixed.log", text }]);
+  assert.equal(result.calls[0].stream, false);
+  assert.equal(result.calls[0].outputMessage.content, "ordinary second");
+  assert.equal(result.calls[1].stream, true);
+  assert.equal(result.calls[1].outputMessage.content, "streamed first");
+  assert.equal(result.calls[1].status, "matched");
+});
+
 test("leaves a rejected request incomplete instead of shifting matches", () => {
   const model = "test/model";
   const text = [
