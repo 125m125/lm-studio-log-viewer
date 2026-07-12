@@ -115,6 +115,26 @@
     }
   }
 
+  function toStreamPacketView(packetEvent) {
+    const packet = packetEvent && packetEvent.data || {};
+    return {
+      ...packet,
+      data: packet,
+      eventId: packetEvent.id,
+      kind: packetEvent.kind,
+      error: packetEvent.error,
+      sourceName: packetEvent.sourceName,
+      sourceIndex: packetEvent.sourceIndex,
+      markerLine: packetEvent.markerLine,
+      lineStart: packetEvent.lineStart,
+      lineEnd: packetEvent.lineEnd,
+      timestampRaw: packetEvent.timestampRaw,
+      timestamp: packetEvent.timestamp,
+      raw: packetEvent.raw,
+      complete: packetEvent.complete
+    };
+  }
+
   function aggregateStream(group) {
     const message = {};
     let finishReason = null;
@@ -330,7 +350,7 @@
         responseRaw: response ? response.raw : null, responseLineStart: response ? response.lineStart : null,
         outputMessage: choice && choice.message || null, finishReason: choice && choice.finish_reason || null,
         usage: responseBody && responseBody.usage || null, status,
-        streamPackets: streamInfo ? streamInfo.packetEvents : [],
+        streamPackets: streamInfo ? streamInfo.packetEvents.map(toStreamPacketView) : [],
         streamComplete,
         matchMethod: request.matchMethod || null, matchConfidence: request.matchConfidence || null,
         durationMs: request.timestamp != null && endTime != null ? Math.max(0, endTime - request.timestamp) : null,

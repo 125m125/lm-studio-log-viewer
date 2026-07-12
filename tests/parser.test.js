@@ -79,6 +79,7 @@ test("preserves streamed reasoning and tool-call deltas while assembling output"
   assert.equal(call.outputMessage.reasoning_content, "Need data");
   assert.equal(call.outputMessage.content, "Done");
   assert.equal(call.outputMessage.tool_calls[0].function.arguments, '{"q":"weather"}');
+  assert.deepEqual(call.streamPackets[1].choices[0].delta.tool_calls, [firstToolDelta]);
   assert.deepEqual(call.streamPackets[1].data.choices[0].delta.tool_calls, [firstToolDelta]);
   assert.equal(call.finishReason, "tool_calls");
 });
