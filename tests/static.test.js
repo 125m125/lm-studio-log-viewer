@@ -20,3 +20,10 @@ test("desktop panes establish independently scrollable flex children", () => {
   assert.match(css, /\.detail\s*\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/is);
   assert.match(css, /\.content\s*\{[^}]*min-height:\s*0[^}]*overflow:\s*hidden/is);
 });
+
+test("detail rendering exposes streamed packet evidence", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(app, /call\.streamPackets/);
+  assert.match(app, /Stream packets/);
+  assert.match(app, /streamComplete/);
+});
