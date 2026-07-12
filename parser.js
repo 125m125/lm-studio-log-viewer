@@ -176,6 +176,11 @@
     return body.stream === true;
   }
 
+  function selectRequestCandidate(candidates, isStreamResponse) {
+    if (!candidates.length) return null;
+    return isStreamResponse ? candidates.at(-1) : candidates[0];
+  }
+
   function parseSource(source) {
     const lines = source.text.replace(/^\uFEFF/, "").split(/\r?\n/);
     const requests = [], responses = [], runs = [], streamPackets = [], streamFinished = [], warnings = [];
@@ -312,7 +317,8 @@
         }
       );
       const preferredStarted = baseStarted.filter(r => isStreamResponse ? isStreamRequest(r) : !isStreamRequest(r));
-      let request = (preferredStarted.length ? preferredStarted : baseStarted).at(-1) || null;
+      let request = selectRequestCandidate(preferredStarted, isStreamResponse);
+      if (!request && !isStreamResponse) request = selectRequestCandidate(baseStarted, false);
       let method = "lifecycle", confidence = "high";
       if (!request) {
         const baseFallback = fallbackPending.filter(r =>
@@ -324,8 +330,9 @@
           }
         );
         const preferredFallback = baseFallback.filter(r => isStreamResponse ? isStreamRequest(r) : !isStreamRequest(r));
-        request = (preferredFallback.length ? preferredFallback : baseFallback).at(-1) || null;
-        method = "chronological"; confidence = "uncertain";
+        request = selectRequestCandidate(preferredFallback, isStreamResponse);
+        if (!request && !isStreamResponse) request = selectRequestCandidate(baseFallback, false);
+        if (request) { method = "chronological"; confidence = "uncertain"; }
       }
       if (request) { request.response = response; request.matchMethod = method; request.matchConfidence = confidence; }
       else warnings.push({ sourceName: source.name, line: response.lineStart, message: "Response has no preceding request" });

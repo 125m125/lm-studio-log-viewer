@@ -182,6 +182,41 @@ test("prefers ordinary requests for ordinary responses when a streamed request i
   assert.equal(result.calls[1].status, "matched");
 });
 
+test("matches overlapping ordinary responses FIFO instead of newest-first", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 12:20:00", { model, messages: [{ role: "user", content: "ordinary first" }] }),
+    run("2026-06-27 12:20:01", model, 1),
+    request("2026-06-27 12:20:02", { model, messages: [{ role: "user", content: "ordinary second" }] }),
+    run("2026-06-27 12:20:03", model, 1),
+    response("2026-06-27 12:20:04", prediction(model, "first result")),
+    response("2026-06-27 12:20:05", prediction(model, "second result"))
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "ordinary-fifo.log", text }]);
+  assert.equal(result.calls[0].outputMessage.content, "first result");
+  assert.equal(result.calls[1].outputMessage.content, "second result");
+  assert.equal(result.calls[0].status, "matched");
+  assert.equal(result.calls[1].status, "matched");
+});
+
+test("warns on orphan streamed packets instead of fabricating an ordinary match", () => {
+  const model = "test/model";
+  const text = [
+    request("2026-06-27 12:30:00", { model, messages: [{ role: "user", content: "ordinary only" }] }),
+    run("2026-06-27 12:30:01", model, 1),
+    packet("2026-06-27 12:30:02", model, { id: "orphan-stream", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { role: "assistant", content: "streamed orphan" }, finish_reason: "stop" }] }),
+    finished("2026-06-27 12:30:03", model)
+  ].join("\n");
+
+  const result = parser.parseFiles([{ name: "orphan-stream.log", text }]);
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.calls[0].stream, false);
+  assert.equal(result.calls[0].status, "incomplete");
+  assert.equal(result.calls[0].outputMessage, null);
+  assert.match(result.warnings.map(warning => warning.message).join("\n"), /Response has no preceding request/);
+});
+
 test("leaves a rejected request incomplete instead of shifting matches", () => {
   const model = "test/model";
   const text = [
