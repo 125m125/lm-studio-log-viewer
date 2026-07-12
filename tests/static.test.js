@@ -27,3 +27,11 @@ test("detail rendering exposes streamed packet evidence", () => {
   assert.match(app, /Stream packets/);
   assert.match(app, /streamComplete/);
 });
+
+test("detail rendering wires streamed packet evidence from the call fields", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(app, /call\.stream\s*\?\s*\(\(call\.finishReason\s*\?\s*call\.finishReason\s*\+\s*"[^"]*"\s*:\s*""\)\s*\+\s*call\.streamPackets\.length\s*\+\s*" packets"\)/s);
+  assert.match(app, /call\.stream\s*&&\s*!call\.streamComplete\s*\?\s*'<p class="stream-note">Partial stream: logging ended before the terminal packet\.<\/p>'\s*:\s*""/s);
+  assert.match(app, /detailBlock\("Stream packets \("\s*\+\s*call\.streamPackets\.length\s*\+\s*"\)",\s*call\.streamPackets,\s*\{\s*copyKey:\s*"stream-packets"\s*\}\)/s);
+  assert.match(app, /const copyMap = \{[^}]*"stream-packets": call\.streamPackets[^}]*\}/s);
+});
