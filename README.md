@@ -15,6 +15,7 @@ The browser cannot open that path automatically because local-file access always
 ## Features
 
 - Multiline, string-aware JSON parsing for LM Studio request and prediction records
+- Streamed `Generated packet:` responses are reconstructed into final outputs while preserving packet-level delta evidence
 - Request/response matching using inference lifecycle markers
 - Explicit matched, uncertain, and incomplete states
 - Conversation reconstruction requiring identical initial system/user prompts, then using ordered message overlap for ancestry
