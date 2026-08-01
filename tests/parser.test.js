@@ -986,6 +986,26 @@ test("live reducer updates one call as streamed events arrive", () => {
   assert.equal(update.result.calls[0].id, callId);
   assert.equal(update.result.calls[0].outputMessage.content, "Hello");
   assert.equal(update.result.calls[0].streamPackets.length, 1);
+
+  update = reducer.apply([
+    {
+      id: "packet-2",
+      sourceId: "tail.log",
+      correlationId: "stream-1",
+      kind: "packet",
+      lineStart: 4,
+      lineEnd: 4,
+      timestampRaw: "2026-08-01 10:00:03",
+      timestamp: Date.parse("2026-08-01T10:00:03"),
+      payload: {
+        id: "stream-1",
+        model,
+        choices: [{ delta: {}, finish_reason: "stop" }],
+      },
+    },
+  ]);
+  assert.equal(update.result.calls[0].status, "matched");
+  assert.equal(update.result.calls[0].streamComplete, true);
 });
 
 test("live reducer marks ambiguous stream attribution uncertain", () => {

@@ -116,6 +116,28 @@
     console.warn("LM Studio live watcher", entry);
   }
 
+  function flushLiveUpdates() {
+    if (!state.live) return;
+    state.live.flushScheduled = false;
+    const events = state.live.pendingEvents.splice(0);
+    if (!events.length) return;
+    const update = state.live.reducer.apply(events);
+    state.result = update.result;
+    if (!state.selectedId && state.result.calls[0]) state.selectedId = state.result.calls[0].id;
+    populateModels();
+    if (update.changes.addedCallIds.length) render();
+    else { renderStats(); renderDetail(); }
+  }
+
+  function scheduleLiveFlush() {
+    if (!state.live || state.live.flushScheduled) return;
+    state.live.flushScheduled = true;
+    const schedule = typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame
+      : callback => setTimeout(callback, 0);
+    schedule(flushLiveUpdates);
+  }
+
   function applyLiveText(chunk) {
     if (!state.live || state.live.fileName !== chunk.fileName) {
       if (state.live) state.live.parser = state.live.parsers.get(chunk.fileName) || window.LMStudioLogParser.createIncrementalParser(chunk.fileName);
@@ -124,15 +146,11 @@
     if (!state.live.parser) return;
     state.live.parsers.set(chunk.fileName, state.live.parser);
     const parsed = state.live.parser.push(chunk.text);
-    const update = state.live.reducer.apply(parsed.events);
-    state.result = update.result;
-    state.result.warnings = [...state.result.warnings, ...parsed.warnings];
+    state.live.pendingEvents.push(...parsed.events);
     parsed.warnings.forEach(warning => recordLiveDiagnostic({ kind: "parse-warning", fileName: chunk.fileName, message: warning.message }));
-    if (!state.selectedId && state.result.calls[0]) state.selectedId = state.result.calls[0].id;
-    populateModels();
-    render();
     state.live.lastUpdate = Date.now();
     setLiveStatus("live", "Watching " + chunk.fileName + " · updated " + new Date(state.live.lastUpdate).toLocaleTimeString());
+    scheduleLiveFlush();
   }
 
   async function startWatching() {
@@ -148,7 +166,7 @@
     state.result = { calls: [], threads: [], warnings: [], stats: { files: 1, calls: 0, matched: 0, incomplete: 0, uncertain: 0, threads: 0, promptTokens: 0, completionTokens: 0 } };
     state.selectedId = null; state.query = ""; state.status = "all"; state.model = "all";
     els.search.value = ""; els.status.value = "all";
-    const live = { parser: null, parsers: new Map(), reducer: window.LMStudioLogParser.createLiveReducer("live-folder"), fileName: null, lastUpdate: null, diagnostics: [], source: null };
+    const live = { parser: null, parsers: new Map(), reducer: window.LMStudioLogParser.createLiveReducer("live-folder"), fileName: null, lastUpdate: null, diagnostics: [], pendingEvents: [], flushScheduled: false, source: null };
     live.source = new window.LMStudioLiveSource.DirectoryTailSource({
       directory: picked.directory,
       onText: applyLiveText,

@@ -736,9 +736,12 @@
       if (event.stream) continue;
       add(event, "prediction");
     }
+    let messagesStreamId = null;
     for (const event of parsed.events.streamPackets) {
       const packet = event.data || {};
-      add(event, "packet", packet.id || null);
+      if (packet.type === "message_start")
+        messagesStreamId = "messages-" + sourceId + "-" + event.lineStart;
+      add(event, "packet", packet.id || messagesStreamId || null);
     }
     for (const event of parsed.events.streamFinished) {
       events.push({
@@ -761,27 +764,137 @@
   }
 
   function createIncrementalParser(sourceId) {
-    let text = "";
+    let buffer = "";
+    let lineBase = 1;
     let finished = false;
-    const emitted = new Set();
-    const warned = new Set();
 
-    function read() {
-      const parsed = parseSource({ name: sourceId, index: 0, text });
-      const events = normalizedLiveEvents(parsed, sourceId).filter((event) => {
-        if (emitted.has(event.id)) return false;
-        emitted.add(event.id);
-        return true;
-      });
+    function lineCount(text) {
+      return (text.match(/\n/g) || []).length;
+    }
+
+    function consume(length) {
+      const consumed = buffer.slice(0, length);
+      buffer = buffer.slice(length);
+      lineBase += lineCount(consumed);
+    }
+
+    function liveEvent(kind, line, raw, data, lineEnd) {
+      const header = HEADER_RE.exec(line);
+      const event = {
+        id: kind + "-" + sourceId + "-" + lineBase,
+        sourceId,
+        correlationId: null,
+        kind,
+        timestamp: header ? parseTimestamp(header[1]) : null,
+        timestampRaw: header ? header[1] : "",
+        lineStart: lineBase,
+        lineEnd: lineBase + lineCount(raw),
+        payload: data,
+        raw,
+        confidence: "inferred",
+      };
+      if (kind === "packet") {
+        const packet = data || {};
+        if (packet.type === "message_start")
+          liveEvent.messagesStreamId = "messages-" + sourceId + "-" + lineBase;
+        event.correlationId = packet.id || liveEvent.messagesStreamId || null;
+      }
+      return event;
+    }
+
+    function process(final) {
+      const events = [];
       const warnings = [];
-      if (finished) {
-        for (const warning of parsed.warnings) {
-          const key = warning.line + ":" + warning.message;
-          if (!warned.has(key)) {
-            warned.add(key);
-            warnings.push(warning);
+      while (buffer) {
+        const newline = buffer.indexOf("\n");
+        const firstLine = (newline < 0 ? buffer : buffer.slice(0, newline)).replace(/\r$/, "");
+        const marker = firstLine.includes(REQUEST_MARKER)
+          ? [REQUEST_MARKER, "request"]
+          : firstLine.includes(RESPONSE_MARKER)
+            ? [RESPONSE_MARKER, "prediction"]
+            : firstLine.includes(STREAM_PACKET_MARKER)
+              ? [STREAM_PACKET_MARKER, "packet"]
+              : null;
+        if (marker) {
+          const brace = firstLine.indexOf("{", firstLine.indexOf(marker[0]) + marker[0].length);
+          if (brace < 0) {
+            if (!final && newline < 0) break;
+            warnings.push({ sourceName: sourceId, line: lineBase, message: "JSON record has no object body" });
+            consume(newline < 0 ? buffer.length : newline + 1);
+            continue;
           }
+          let depth = 0;
+          let inString = false;
+          let escaped = false;
+          let end = -1;
+          for (let index = brace; index < buffer.length; index++) {
+            const ch = buffer[index];
+            if (inString) {
+              if (escaped) escaped = false;
+              else if (ch === "\\") escaped = true;
+              else if (ch === '"') inString = false;
+            } else if (ch === '"') inString = true;
+            else if (ch === "{") depth++;
+            else if (ch === "}" && --depth === 0) {
+              end = index;
+              break;
+            }
+          }
+          if (end < 0) {
+            if (!final) break;
+            warnings.push({ sourceName: sourceId, line: lineBase, message: "JSON record is truncated" });
+            break;
+          }
+          const raw = buffer.slice(brace, end + 1);
+          let data;
+          try {
+            data = JSON.parse(raw);
+          } catch (error) {
+            warnings.push({ sourceName: sourceId, line: lineBase, message: error.message });
+          }
+          if (data) events.push(liveEvent(marker[1], firstLine, raw, data, lineBase + lineCount(buffer.slice(0, end + 1))));
+          consume(end + 1 < buffer.length && buffer[end + 1] === "\n" ? end + 2 : end + 1);
+          continue;
         }
+        const run = RUN_RE.exec(firstLine);
+        const isFinished = firstLine.includes(STREAM_FINISHED_MARKER);
+        if (run || isFinished) {
+          if (newline < 0 && !final) break;
+          if (run) {
+            events.push({
+              id: "run-" + sourceId + "-" + lineBase,
+              sourceId,
+              correlationId: null,
+              kind: "run",
+              timestamp: parseTimestamp(run[1]),
+              timestampRaw: run[1],
+              lineStart: lineBase,
+              lineEnd: lineBase,
+              payload: { model: run[2], messageCount: Number(run[3]) },
+              raw: firstLine,
+              confidence: "inferred",
+            });
+          } else {
+            const header = HEADER_RE.exec(firstLine);
+            events.push({
+              id: "finished-" + sourceId + "-" + lineBase,
+              sourceId,
+              correlationId: null,
+              kind: "finished",
+              timestamp: header ? parseTimestamp(header[1]) : null,
+              timestampRaw: header ? header[1] : "",
+              lineStart: lineBase,
+              lineEnd: lineBase,
+              payload: { model: header && header[3] || null },
+              raw: firstLine,
+              confidence: "inferred",
+            });
+          }
+          consume(newline < 0 ? buffer.length : newline + 1);
+          continue;
+        }
+        if (newline < 0) break;
+        consume(newline + 1);
       }
       return { events, warnings };
     }
@@ -789,137 +902,260 @@
     return {
       push(chunk) {
         if (finished) throw new Error("Incremental parser is finished");
-        text += String(chunk || "");
-        return read();
+        buffer += String(chunk || "");
+        return process(false);
       },
       finish() {
         finished = true;
-        return read();
+        return process(true);
       },
     };
   }
 
   function createLiveReducer(sourceId) {
-    const eventMap = new Map();
-    const ambiguityWarnings = new Map();
+    const seen = new Set();
+    const requests = [];
+    const requestByEvent = new Map();
+    const streams = new Map();
+    const streamToCall = new Map();
+    const warnings = new Map();
+    const sources = new Set();
     let eventOrder = 0;
     let result = null;
 
-    function eventLine(event) {
-      const timestamp = event.timestampRaw || "1970-01-01 00:00:00";
-      const payload = event.payload || {};
-      if (event.kind === "request")
-        return (
-          "[" +
-          timestamp +
-          "][DEBUG] Received request: POST to /v1/chat/completions with body " +
-          JSON.stringify(payload)
-        );
-      if (event.kind === "run")
-        return (
-          "[" +
-          timestamp +
-          "][INFO][" +
-          (payload.model || "Unknown model") +
-          "] Running chat completion on conversation with " +
-          (payload.messageCount || 0) +
-          " messages."
-        );
-      if (event.kind === "prediction")
-        return (
-          "[" +
-          timestamp +
-          "][INFO][" +
-          (payload.model || "Unknown model") +
-          "] Generated prediction: " +
-          JSON.stringify(payload)
-        );
-      if (event.kind === "packet")
-        return (
-          "[" +
-          timestamp +
-          "][INFO][" +
-          (payload.model || "Unknown model") +
-          "] Generated packet: " +
-          JSON.stringify(payload)
-        );
-      if (event.kind === "finished")
-        return (
-          "[" +
-          timestamp +
-          "][INFO][" +
-          (payload.model || "Unknown model") +
-          "] Finished streaming response"
-        );
-      return "";
+    function emptyResult() {
+      return {
+        calls: [],
+        threads: [],
+        warnings: [],
+        sources: [],
+        stats: {
+          files: 0,
+          calls: 0,
+          matched: 0,
+          incomplete: 0,
+          uncertain: 0,
+          threads: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+        },
+      };
+    }
+
+    function newCall(event) {
+      const body = event.payload || {};
+      const call = {
+        id: "call-live-" + (requests.length + 1),
+        sourceName: event.sourceId,
+        sourceIndex: 0,
+        endpoint: "POST to /v1/chat/completions",
+        timestamp: event.timestamp,
+        timestampRaw: event.timestampRaw || "",
+        lineStart: event.lineStart,
+        model: body.model || "Unknown model",
+        stream: body.stream === true,
+        request: body,
+        requestRaw: event.raw || null,
+        messages: Array.isArray(body.messages)
+          ? body.messages.map(normalizeMessage)
+          : [],
+        response: null,
+        responseRaw: null,
+        responseLineStart: null,
+        outputMessage: null,
+        finishReason: null,
+        usage: null,
+        status: "incomplete",
+        streamPackets: [],
+        streamComplete: false,
+        matchMethod: null,
+        matchConfidence: null,
+        durationMs: null,
+        rawContext: {
+          from: event.lineStart,
+          to: event.lineEnd,
+          text: event.raw || "",
+        },
+        parseError: null,
+      };
+      requests.push({ event, call, run: null, response: null, order: eventOrder++ });
+      requestByEvent.set(event.id, requests.at(-1));
+      return call;
+    }
+
+    function eligibleRequests(event, stream) {
+      const model = event.payload && event.payload.model;
+      const correlated = requests.filter(
+        (request) =>
+          request.event.correlationId &&
+          request.event.correlationId === stream.id &&
+          request.event.payload &&
+          request.event.payload.stream === true,
+      );
+      if (correlated.length) return correlated;
+      return requests.filter(
+        (request) =>
+          request.event.order < event.order &&
+          request.event.payload &&
+          request.event.payload.stream === true &&
+          (!model || !request.event.payload.model || request.event.payload.model === model),
+      );
+    }
+
+    function packetView(event) {
+      return toStreamPacketView({
+        id: event.id,
+        kind: "stream-packet",
+        data: event.payload,
+        sourceName: event.sourceId,
+        sourceIndex: 0,
+        markerLine: "",
+        lineStart: event.lineStart,
+        lineEnd: event.lineEnd,
+        timestampRaw: event.timestampRaw || "",
+        timestamp: event.timestamp,
+        raw: event.raw || JSON.stringify(event.payload),
+        complete: true,
+      });
+    }
+
+    function updateStream(stream, event) {
+      const aggregate = aggregateStream({
+        id: stream.id,
+        model: stream.model,
+        packets: stream.events.map((item) => item.payload),
+        packetEvents: stream.events.map(packetView),
+      });
+      const call = streamToCall.get(stream.id);
+      if (!call) return null;
+      const choice = aggregate.response.choices[0];
+      call.response = aggregate.response;
+      call.responseRaw = stream.events.map((item) => item.raw || JSON.stringify(item.payload)).join("\n");
+      call.responseLineStart = stream.events[0].lineStart;
+      call.outputMessage = aggregate.outputMessage;
+      call.finishReason = aggregate.finishReason;
+      call.usage = aggregate.usage;
+      call.streamPackets = stream.events.map(packetView);
+      call.streamComplete = Boolean(stream.complete || stream.finished);
+      call.status = call.matchConfidence === "uncertain"
+        ? "uncertain"
+        : call.streamComplete ? "matched" : "incomplete";
+      call.durationMs = call.timestamp != null && event.timestamp != null
+        ? Math.max(0, event.timestamp - call.timestamp)
+        : null;
+      call.rawContext = {
+        from: call.lineStart,
+        to: stream.finished ? stream.finished.lineStart : event.lineEnd,
+        text: call.requestRaw + "\n" + call.responseRaw,
+      };
+      return call.id;
     }
 
     function apply(incoming) {
-      for (const event of incoming || []) {
-        const key = event.sourceId + "\u0000" + event.id;
-        if (!eventMap.has(key)) eventMap.set(key, { ...event, order: eventOrder++ });
-      }
-      const ordered = [...eventMap.values()].sort(
-        (a, b) => a.order - b.order,
-      );
-      const text = ordered.map(eventLine).filter(Boolean).join("\n");
-      const next = parseFiles([{ name: sourceId, text }]);
-      const streamGroups = new Map();
-      for (const event of ordered) {
-        if (event.kind !== "packet" || !event.correlationId) continue;
-        const group = streamGroups.get(event.correlationId) || [];
-        group.push(event);
-        streamGroups.set(event.correlationId, group);
-      }
-      for (const [streamId, packets] of streamGroups) {
-        const first = packets[0];
-        const model = first.payload && first.payload.model;
-        const candidates = ordered.filter(
-          (event) =>
-            event.kind === "request" &&
-            event.lineStart < first.lineStart &&
-            event.payload &&
-            event.payload.stream === true &&
-            (!model || event.payload.model === model),
-        );
-        if (candidates.length < 2) continue;
-        const warningKey = streamId + ":" + first.lineStart;
-        const warning = {
-          sourceName: sourceId,
-          line: first.lineStart,
-          message:
-            "Ambiguous stream association for " +
-            streamId +
-            "; request attribution is uncertain",
-        };
-        ambiguityWarnings.set(warningKey, warning);
-        const matchingCall = next.calls.find(
-          (call) =>
-            call.stream &&
-            call.responseLineStart === first.lineStart &&
-            call.model === model,
-        );
-        if (matchingCall) {
-          matchingCall.status = "uncertain";
-          matchingCall.matchConfidence = "uncertain";
+      const addedCallIds = [];
+      const updatedCallIds = new Set();
+      let addedRequest = false;
+      for (const original of incoming || []) {
+        const key = original.sourceId + "\u0000" + original.id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const event = { ...original, order: eventOrder++ };
+        sources.add(event.sourceId);
+        if (event.kind === "request") {
+          const call = newCall(event);
+          addedCallIds.push(call.id);
+          addedRequest = true;
+        } else if (event.kind === "run") {
+          const candidates = requests.filter(
+            (request) =>
+              !request.run &&
+              request.event.order < event.order &&
+              (!event.payload.model || request.call.model === event.payload.model),
+          );
+          if (candidates.length) candidates.at(-1).run = event;
+        } else if (event.kind === "prediction") {
+          const request = requests.find(
+            (candidate) => !candidate.response && !candidate.call.stream && candidate.event.order < event.order,
+          );
+          if (request) {
+            request.response = event;
+            request.call.response = event.payload;
+            request.call.responseRaw = event.raw || JSON.stringify(event.payload);
+            request.call.responseLineStart = event.lineStart;
+            const choice = event.payload && event.payload.choices && event.payload.choices[0];
+            request.call.outputMessage = choice && choice.message || null;
+            request.call.finishReason = choice && choice.finish_reason || null;
+            request.call.usage = event.payload && event.payload.usage || null;
+            request.call.status = "matched";
+            request.call.matchMethod = "lifecycle";
+            request.call.matchConfidence = "high";
+            updatedCallIds.add(request.call.id);
+          }
+        } else if (event.kind === "packet" && event.correlationId) {
+          let stream = streams.get(event.correlationId);
+          if (!stream) {
+            stream = { id: event.correlationId, model: event.payload && event.payload.model, events: [], finished: null, complete: false };
+            streams.set(event.correlationId, stream);
+          }
+          stream.events.push(event);
+          stream.model = stream.model || (event.payload && event.payload.model) || (event.payload && event.payload.message && event.payload.message.model) || null;
+          const choice = event.payload && Array.isArray(event.payload.choices) ? event.payload.choices[0] : null;
+          if (choice && choice.finish_reason != null) stream.complete = true;
+          if (event.payload && event.payload.type === "message_delta" && event.payload.delta && event.payload.delta.stop_reason != null) stream.complete = true;
+          const candidates = eligibleRequests(event, stream);
+          if (!streamToCall.has(stream.id) && candidates.length) {
+            const selected = candidates.at(-1);
+            streamToCall.set(stream.id, selected.call);
+            if (candidates.length > 1) {
+              selected.call.matchConfidence = "uncertain";
+              const warningKey = stream.id + ":" + selected.event.id;
+              warnings.set(warningKey, {
+                sourceName: event.sourceId,
+                line: event.lineStart,
+                message: "Ambiguous stream association for " + stream.id + "; request attribution is uncertain",
+              });
+            } else {
+              selected.call.matchMethod = "lifecycle";
+              selected.call.matchConfidence = "high";
+            }
+          }
+          const id = updateStream(stream, event);
+          if (id) updatedCallIds.add(id);
+        } else if (event.kind === "finished") {
+          const candidates = [...streams.values()].filter(
+            (stream) =>
+              !stream.finished &&
+              stream.events.length &&
+              stream.events.at(-1).order < event.order &&
+              (!event.payload.model || !stream.model || stream.model === event.payload.model),
+          );
+          if (candidates.length) {
+            const stream = candidates.at(-1);
+            stream.finished = event;
+            stream.complete = true;
+            const id = updateStream(stream, event);
+            if (id) updatedCallIds.add(id);
+          }
         }
       }
-      next.warnings = [
-        ...next.warnings,
-        ...ambiguityWarnings.values(),
-      ];
-      next.threads = buildThreads(next.calls);
-      next.stats.matched = next.calls.filter((call) => call.status === "matched").length;
-      next.stats.incomplete = next.calls.filter((call) => call.status === "incomplete").length;
-      next.stats.uncertain = next.calls.filter((call) => call.status === "uncertain").length;
-      const previousIds = new Set((result && result.calls || []).map((call) => call.id));
-      const nextIds = new Set(next.calls.map((call) => call.id));
+      if (!result) result = emptyResult();
+      result.calls = requests.map((request) => request.call);
+      if (addedRequest || !result.threads.length) result.threads = buildThreads(result.calls);
+      result.warnings = [...warnings.values()];
+      result.sources = [...sources].map((name, index) => ({ name, size: 0, index }));
+      result.stats.files = result.sources.length;
+      result.stats.calls = result.calls.length;
+      result.stats.matched = result.calls.filter((call) => call.status === "matched").length;
+      result.stats.incomplete = result.calls.filter((call) => call.status === "incomplete").length;
+      result.stats.uncertain = result.calls.filter((call) => call.status === "uncertain").length;
+      result.stats.threads = result.threads.length;
+      result.stats.promptTokens = result.calls.reduce((total, call) => total + ((call.usage && call.usage.prompt_tokens) || 0), 0);
+      result.stats.completionTokens = result.calls.reduce((total, call) => total + ((call.usage && call.usage.completion_tokens) || 0), 0);
       const changes = {
-        addedCallIds: next.calls.filter((call) => !previousIds.has(call.id)).map((call) => call.id),
-        updatedCallIds: next.calls.filter((call) => previousIds.has(call.id)).map((call) => call.id),
-        warnings: next.warnings,
+        addedCallIds,
+        updatedCallIds: [...updatedCallIds],
+        warnings: result.warnings,
       };
-      result = next;
       return { result, changes };
     }
 

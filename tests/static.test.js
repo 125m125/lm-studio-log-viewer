@@ -56,3 +56,15 @@ test("live diagnostics are rendered persistently", () => {
   assert.match(app, /console\.warn/);
   assert.match(app, /live-diagnostics-output/);
 });
+
+test("live updates avoid full-history replay and batch UI work", () => {
+  const parser = fs.readFileSync(path.join(__dirname, "..", "parser.js"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const reducer = parser.slice(parser.indexOf("function createLiveReducer"), parser.indexOf("function lcsPairs"));
+  const incremental = parser.slice(parser.indexOf("function createIncrementalParser"), parser.indexOf("function createLiveReducer"));
+  assert.doesNotMatch(reducer, /parseFiles\(/);
+  assert.doesNotMatch(incremental, /parseSource\(/);
+  assert.match(app, /pendingEvents/);
+  assert.match(app, /requestAnimationFrame/);
+  assert.match(app, /renderStats\(\); renderDetail\(\)/);
+});
