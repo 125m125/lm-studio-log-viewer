@@ -9,14 +9,14 @@
     return entry && typeof entry.name === "string" && /\.log$/i.test(entry.name);
   }
 
-  function newestEntry(entries) {
+  function orderedEntries(entries) {
     return entries
       .filter(isLogEntry)
       .sort(
         (a, b) =>
-          (Number(b.modified) || 0) - (Number(a.modified) || 0) ||
-          b.name.localeCompare(a.name),
-      )[0] || null;
+          (Number(a.modified) || 0) - (Number(b.modified) || 0) ||
+          a.name.localeCompare(b.name),
+      );
   }
 
   class DirectoryTailSource {
@@ -27,8 +27,7 @@
       this.onText = options.onText || function () {};
       this.onStatus = options.onStatus || function () {};
       this.onWarning = options.onWarning || function () {};
-      this.activeName = null;
-      this.offset = 0;
+      this.offsets = new Map();
       this.timer = null;
       this.reading = false;
       this.stopped = false;
@@ -45,32 +44,42 @@
       this.reading = true;
       try {
         const entries = await this.directory.list();
-        const entry = newestEntry(entries);
-        if (!entry) {
+        const logEntries = orderedEntries(entries);
+        if (!logEntries.length) {
           this.setStatus("live");
           return;
         }
-        if (entry.name !== this.activeName) {
-          this.activeName = entry.name;
-          this.offset = 0;
-        } else if (entry.size < this.offset) {
-          this.onWarning({
-            kind: "truncated",
-            message: "Active log was truncated; restarting from the beginning.",
-            fileName: entry.name,
-          });
-          this.offset = 0;
-        }
-        if (entry.size > this.offset) {
-          const offset = this.offset;
-          const text = await entry.read(offset, entry.size);
-          this.offset = entry.size;
-          if (text) {
-            this.onText({
-              sourceId: entry.name,
+        for (const entry of logEntries) {
+          let offset = this.offsets.get(entry.name) || 0;
+          if (entry.size < offset) {
+            this.onWarning({
+              kind: "truncated",
+              message: "Log was truncated; restarting from the beginning.",
               fileName: entry.name,
-              text,
-              offset,
+            });
+            offset = 0;
+          }
+          if (entry.size <= offset) {
+            this.offsets.set(entry.name, entry.size);
+            continue;
+          }
+          try {
+            const text = await entry.read(offset, entry.size);
+            this.offsets.set(entry.name, entry.size);
+            if (text) {
+              this.onText({
+                sourceId: entry.name,
+                fileName: entry.name,
+                text,
+                offset,
+              });
+            }
+          } catch (error) {
+            this.onWarning({
+              kind: "read-error",
+              fileName: entry.name,
+              operation: "read",
+              message: error && error.message ? error.message : String(error),
             });
           }
         }
@@ -132,7 +141,10 @@
               name,
               modified: file.lastModified,
               size: file.size,
-              read: (start, end) => file.slice(start, end).text(),
+              read: async (start, end) => {
+                const current = await child.getFile();
+                return current.slice(start, end).text();
+              },
             });
           }
           return entries;

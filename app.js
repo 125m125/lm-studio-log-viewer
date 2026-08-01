@@ -4,7 +4,7 @@
   const state = { result: null, selectedId: null, query: "", status: "all", model: "all", loading: false, live: null };
   const els = {
     shell: $("app-shell"), welcome: $("drop-zone"), workspace: $("workspace"), input: $("file-input"),
-    open: $("open-files"), welcomeOpen: $("welcome-open"), watch: $("watch-folder"), stopWatch: $("stop-watch"), liveStatus: $("live-status"), clear: $("clear-files"), search: $("search"),
+    open: $("open-files"), welcomeOpen: $("welcome-open"), watch: $("watch-folder"), stopWatch: $("stop-watch"), liveStatus: $("live-status"), diagnostics: $("live-diagnostics"), diagnosticsOutput: $("live-diagnostics-output"), clear: $("clear-files"), search: $("search"),
     status: $("status-filter"), model: $("model-filter"), list: $("thread-list"), stats: $("stats"),
     detail: $("detail"), toast: $("toast")
   };
@@ -100,18 +100,34 @@
   function stopWatching() {
     if (state.live && state.live.source) state.live.source.stop();
     state.live = null;
+    els.diagnostics.hidden = true;
     setLiveStatus("idle", "Snapshot mode");
+  }
+
+  function recordLiveDiagnostic(entry) {
+    if (!state.live) return;
+    const stamp = new Date().toLocaleTimeString();
+    const file = entry.fileName ? " [" + entry.fileName + "]" : "";
+    const line = "[" + stamp + "] " + (entry.kind || "info") + file + ": " + entry.message;
+    state.live.diagnostics.push(line);
+    state.live.diagnostics = state.live.diagnostics.slice(-100);
+    els.diagnostics.hidden = false;
+    els.diagnosticsOutput.textContent = state.live.diagnostics.join("\n");
+    console.warn("LM Studio live watcher", entry);
   }
 
   function applyLiveText(chunk) {
     if (!state.live || state.live.fileName !== chunk.fileName) {
-      if (state.live) state.live.parser = window.LMStudioLogParser.createIncrementalParser(chunk.fileName);
+      if (state.live) state.live.parser = state.live.parsers.get(chunk.fileName) || window.LMStudioLogParser.createIncrementalParser(chunk.fileName);
       if (state.live) state.live.fileName = chunk.fileName;
     }
+    if (!state.live.parser) return;
+    state.live.parsers.set(chunk.fileName, state.live.parser);
     const parsed = state.live.parser.push(chunk.text);
     const update = state.live.reducer.apply(parsed.events);
     state.result = update.result;
     state.result.warnings = [...state.result.warnings, ...parsed.warnings];
+    parsed.warnings.forEach(warning => recordLiveDiagnostic({ kind: "parse-warning", fileName: chunk.fileName, message: warning.message }));
     if (!state.selectedId && state.result.calls[0]) state.selectedId = state.result.calls[0].id;
     populateModels();
     render();
@@ -132,12 +148,12 @@
     state.result = { calls: [], threads: [], warnings: [], stats: { files: 1, calls: 0, matched: 0, incomplete: 0, uncertain: 0, threads: 0, promptTokens: 0, completionTokens: 0 } };
     state.selectedId = null; state.query = ""; state.status = "all"; state.model = "all";
     els.search.value = ""; els.status.value = "all";
-    const live = { parser: null, reducer: window.LMStudioLogParser.createLiveReducer("live-folder"), fileName: null, lastUpdate: null, source: null };
+    const live = { parser: null, parsers: new Map(), reducer: window.LMStudioLogParser.createLiveReducer("live-folder"), fileName: null, lastUpdate: null, diagnostics: [], source: null };
     live.source = new window.LMStudioLiveSource.DirectoryTailSource({
       directory: picked.directory,
       onText: applyLiveText,
       onStatus: status => setLiveStatus(status),
-      onWarning: warning => { if (state.result) state.result.warnings.push(warning); toast(warning.message); }
+      onWarning: warning => { if (state.result) state.result.warnings.push(warning); recordLiveDiagnostic(warning); toast(warning.message); }
     });
     state.live = live;
     setLiveStatus("live");

@@ -47,3 +47,12 @@ test("live folder watching is wired through the source-neutral reducer", () => {
   assert.match(app, /state\.query/);
   assert.match(app, /state\.selectedId/);
 });
+
+test("live diagnostics are rendered persistently", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(html, /id="live-diagnostics"/);
+  assert.match(html, /id="live-diagnostics-output"/);
+  assert.match(app, /console\.warn/);
+  assert.match(app, /live-diagnostics-output/);
+});

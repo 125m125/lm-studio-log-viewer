@@ -4,7 +4,7 @@ A dependency-free, client-side viewer for LM Studio server logs. It reconstructs
 
 ## Use
 
-Open the viewer from a modern browser, then drag in one or more `.log` files or use **Open log files**. For live updates, use **Watch log folder** and select the LM Studio server-log directory once. The viewer polls that directory locally, follows the newest active `.log`, and handles log rotation without requiring repeated uploads. No files or log contents leave the browser tab, and nothing is retained after the tab closes.
+Open the viewer from a modern browser, then drag in one or more `.log` files or use **Open log files**. For live updates, use **Watch log folder** and select the LM Studio server-log directory once. The viewer loads the existing `.log` history, then polls each file for appended bytes and handles log rotation without requiring repeated uploads. Recoverable read and parse problems appear in the persistent **Live diagnostics** panel. No files or log contents leave the browser tab, and nothing is retained after the tab closes.
 
 For the supplied validation log, browse to:
 
