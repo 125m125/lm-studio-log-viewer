@@ -699,6 +699,106 @@
     };
   }
 
+  function normalizedLiveEvents(parsed, sourceId) {
+    const events = [];
+    const add = (event, kind, correlationId) => {
+      if (!event || event.error || event.complete === false) return;
+      events.push({
+        id: event.id,
+        sourceId,
+        correlationId: correlationId || null,
+        kind,
+        timestamp: event.timestamp,
+        timestampRaw: event.timestampRaw,
+        lineStart: event.lineStart,
+        lineEnd: event.lineEnd,
+        payload: event.data,
+        raw: event.raw,
+        confidence: "inferred",
+      });
+    };
+    for (const event of parsed.events.requests) add(event, "request");
+    for (const event of parsed.events.runs)
+      events.push({
+        id: "run-" + sourceId + "-" + event.line,
+        sourceId,
+        correlationId: null,
+        kind: "run",
+        timestamp: event.timestamp,
+        timestampRaw: event.timestampRaw,
+        lineStart: event.line,
+        lineEnd: event.line,
+        payload: event,
+        raw: event.rawLine,
+        confidence: "inferred",
+      });
+    for (const event of parsed.events.responses) {
+      if (event.stream) continue;
+      add(event, "prediction");
+    }
+    for (const event of parsed.events.streamPackets) {
+      const packet = event.data || {};
+      add(event, "packet", packet.id || null);
+    }
+    for (const event of parsed.events.streamFinished) {
+      events.push({
+        id: "finished-" + sourceId + "-" + event.line,
+        sourceId,
+        correlationId: null,
+        kind: "finished",
+        timestamp: event.timestamp,
+        timestampRaw: event.timestampRaw,
+        lineStart: event.line,
+        lineEnd: event.line,
+        payload: event,
+        raw: event.rawLine,
+        confidence: "inferred",
+      });
+    }
+    return events.sort(
+      (a, b) => a.lineStart - b.lineStart || a.lineEnd - b.lineEnd,
+    );
+  }
+
+  function createIncrementalParser(sourceId) {
+    let text = "";
+    let finished = false;
+    const emitted = new Set();
+    const warned = new Set();
+
+    function read() {
+      const parsed = parseSource({ name: sourceId, index: 0, text });
+      const events = normalizedLiveEvents(parsed, sourceId).filter((event) => {
+        if (emitted.has(event.id)) return false;
+        emitted.add(event.id);
+        return true;
+      });
+      const warnings = [];
+      if (finished) {
+        for (const warning of parsed.warnings) {
+          const key = warning.line + ":" + warning.message;
+          if (!warned.has(key)) {
+            warned.add(key);
+            warnings.push(warning);
+          }
+        }
+      }
+      return { events, warnings };
+    }
+
+    return {
+      push(chunk) {
+        if (finished) throw new Error("Incremental parser is finished");
+        text += String(chunk || "");
+        return read();
+      },
+      finish() {
+        finished = true;
+        return read();
+      },
+    };
+  }
+
   function lcsPairs(a, b) {
     const rows = a.length + 1,
       cols = b.length + 1;
@@ -985,6 +1085,7 @@
 
   return {
     parseFiles,
+    createIncrementalParser,
     parseSource,
     buildThreads,
     stableStringify,

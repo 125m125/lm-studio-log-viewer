@@ -913,3 +913,21 @@ test("keeps a partial messages-api stream incomplete", () => {
   assert.equal(call.outputMessage.content, "still working");
   assert.equal(call.finishReason, null);
 });
+
+test("incremental parser buffers split records and emits normalized events once", () => {
+  const stream = parser.createIncrementalParser("tail.log");
+  const first = stream.push(
+    '[2026-08-01 10:00:00][DEBUG] Received request: POST to /v1/chat/completions with body {"model":"m"',
+  );
+  assert.deepEqual(first.events, []);
+
+  const second = stream.push(
+    '}\n[2026-08-01 10:00:01][INFO][m] Generated packet: {"id":"s-1","choices":[]}',
+  );
+  assert.deepEqual(
+    second.events.map((event) => event.kind),
+    ["request", "packet"],
+  );
+  assert.equal(second.events[1].correlationId, "s-1");
+  assert.equal(stream.push("").events.length, 0);
+});
