@@ -1030,3 +1030,44 @@ test("live reducer marks ambiguous stream attribution uncertain", () => {
     /ambiguous/i,
   );
 });
+
+test("live reducer preserves event order across rotated files", () => {
+  const reducer = parser.createLiveReducer("live-folder");
+  const request = (sourceId, id, content) => ({
+    id,
+    sourceId,
+    kind: "request",
+    lineStart: 1,
+    lineEnd: 1,
+    timestampRaw: "2026-08-01 10:00:00",
+    timestamp: Date.parse("2026-08-01T10:00:00"),
+    payload: {
+      model: "test/model",
+      stream: true,
+      messages: [{ role: "user", content }],
+    },
+  });
+  reducer.apply([request("old.log", "old-request", "old")]);
+  const update = reducer.apply([
+    request("new.log", "new-request", "new"),
+    {
+      id: "new-packet",
+      sourceId: "new.log",
+      correlationId: "new-stream",
+      kind: "packet",
+      lineStart: 2,
+      lineEnd: 2,
+      timestampRaw: "2026-08-01 10:00:01",
+      timestamp: Date.parse("2026-08-01T10:00:01"),
+      payload: {
+        id: "new-stream",
+        model: "test/model",
+        choices: [{ delta: { content: "new response" }, finish_reason: "stop" }],
+      },
+    },
+  ]);
+  const newCall = update.result.calls.find(
+    (call) => call.messages[0].content === "new",
+  );
+  assert.equal(newCall.outputMessage.content, "new response");
+});

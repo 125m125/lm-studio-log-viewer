@@ -802,6 +802,7 @@
   function createLiveReducer(sourceId) {
     const eventMap = new Map();
     const ambiguityWarnings = new Map();
+    let eventOrder = 0;
     let result = null;
 
     function eventLine(event) {
@@ -856,13 +857,10 @@
     function apply(incoming) {
       for (const event of incoming || []) {
         const key = event.sourceId + "\u0000" + event.id;
-        if (!eventMap.has(key)) eventMap.set(key, event);
+        if (!eventMap.has(key)) eventMap.set(key, { ...event, order: eventOrder++ });
       }
       const ordered = [...eventMap.values()].sort(
-        (a, b) =>
-          a.lineStart - b.lineStart ||
-          a.lineEnd - b.lineEnd ||
-          a.id.localeCompare(b.id),
+        (a, b) => a.order - b.order,
       );
       const text = ordered.map(eventLine).filter(Boolean).join("\n");
       const next = parseFiles([{ name: sourceId, text }]);

@@ -1,10 +1,10 @@
 (function () {
   "use strict";
   const $ = id => document.getElementById(id);
-  const state = { result: null, selectedId: null, query: "", status: "all", model: "all", loading: false };
+  const state = { result: null, selectedId: null, query: "", status: "all", model: "all", loading: false, live: null };
   const els = {
     shell: $("app-shell"), welcome: $("drop-zone"), workspace: $("workspace"), input: $("file-input"),
-    open: $("open-files"), welcomeOpen: $("welcome-open"), clear: $("clear-files"), search: $("search"),
+    open: $("open-files"), welcomeOpen: $("welcome-open"), watch: $("watch-folder"), stopWatch: $("stop-watch"), liveStatus: $("live-status"), clear: $("clear-files"), search: $("search"),
     status: $("status-filter"), model: $("model-filter"), list: $("thread-list"), stats: $("stats"),
     detail: $("detail"), toast: $("toast")
   };
@@ -57,6 +57,7 @@
   }
 
   async function loadFiles(fileList) {
+    stopWatching();
     const chosen = Array.from(fileList || []).filter(file => file && (file.name.endsWith(".log") || file.type.startsWith("text/") || !file.type));
     if (!chosen.length) return toast("Choose one or more text log files");
     state.loading = true;
@@ -77,15 +78,68 @@
   }
 
   function populateModels() {
+    const previous = state.model;
     const models = [...new Set(state.result.calls.map(call => call.model))].sort();
     els.model.innerHTML = '<option value="all">All models</option>' + models.map(model => '<option value="' + escapeHtml(model) + '">' + escapeHtml(model) + "</option>").join("");
-    els.model.value = "all";
+    els.model.value = models.includes(previous) ? previous : "all";
   }
 
   function clearAll() {
+    stopWatching();
     state.result = null; state.selectedId = null; els.input.value = "";
     els.shell.classList.add("empty"); els.workspace.hidden = true; els.welcome.hidden = false; els.clear.disabled = true;
     els.detail.textContent = ""; els.list.textContent = "";
+  }
+
+  function setLiveStatus(status, detail) {
+    els.liveStatus.textContent = detail || (status === "live" ? "Watching folder" : status === "paused" ? "Watch paused" : status === "error" ? "Watch error" : "Snapshot mode");
+    els.liveStatus.className = "live-status " + status;
+    els.stopWatch.disabled = !state.live;
+  }
+
+  function stopWatching() {
+    if (state.live && state.live.source) state.live.source.stop();
+    state.live = null;
+    setLiveStatus("idle", "Snapshot mode");
+  }
+
+  function applyLiveText(chunk) {
+    if (!state.live || state.live.fileName !== chunk.fileName) {
+      if (state.live) state.live.parser = window.LMStudioLogParser.createIncrementalParser(chunk.fileName);
+      if (state.live) state.live.fileName = chunk.fileName;
+    }
+    const parsed = state.live.parser.push(chunk.text);
+    const update = state.live.reducer.apply(parsed.events);
+    state.result = update.result;
+    state.result.warnings = [...state.result.warnings, ...parsed.warnings];
+    if (!state.selectedId && state.result.calls[0]) state.selectedId = state.result.calls[0].id;
+    populateModels();
+    render();
+    state.live.lastUpdate = Date.now();
+    setLiveStatus("live", "Watching " + chunk.fileName + " · updated " + new Date(state.live.lastUpdate).toLocaleTimeString());
+  }
+
+  async function startWatching() {
+    stopWatching();
+    if (!window.LMStudioLiveSource || !window.LMStudioLiveSource.openLogDirectoryHandle) return toast("Live folder watching is unavailable in this browser");
+    let picked;
+    try { picked = await window.LMStudioLiveSource.openLogDirectoryHandle(); }
+    catch (error) { if (error && error.name === "AbortError") return; return toast("Could not open that folder: " + error.message); }
+    if (!picked.supported) return toast("Use Chrome or Edge over HTTPS or localhost for live folder watching");
+    state.result = { calls: [], threads: [], warnings: [], stats: { files: 1, calls: 0, matched: 0, incomplete: 0, uncertain: 0, threads: 0, promptTokens: 0, completionTokens: 0 } };
+    state.selectedId = null; state.query = ""; state.status = "all"; state.model = "all";
+    els.search.value = ""; els.status.value = "all";
+    const live = { parser: null, reducer: window.LMStudioLogParser.createLiveReducer("live-folder"), fileName: null, lastUpdate: null, source: null };
+    live.source = new window.LMStudioLiveSource.DirectoryTailSource({
+      directory: picked.directory,
+      onText: applyLiveText,
+      onStatus: status => setLiveStatus(status),
+      onWarning: warning => { if (state.result) state.result.warnings.push(warning); toast(warning.message); }
+    });
+    state.live = live;
+    setLiveStatus("live");
+    render();
+    live.source.start();
   }
 
   function matches(call) {
@@ -176,6 +230,8 @@
   }
 
   [els.open, els.welcomeOpen].forEach(button => button.addEventListener("click", () => els.input.click()));
+  els.watch.addEventListener("click", startWatching);
+  els.stopWatch.addEventListener("click", stopWatching);
   els.input.addEventListener("change", () => loadFiles(els.input.files));
   els.clear.addEventListener("click", clearAll);
   els.search.addEventListener("input", () => { state.query = els.search.value.trim().toLowerCase(); renderList(); });
@@ -184,4 +240,5 @@
   ["dragenter", "dragover"].forEach(type => document.addEventListener(type, event => { event.preventDefault(); els.shell.classList.add("dragging"); }));
   ["dragleave", "drop"].forEach(type => document.addEventListener(type, event => { event.preventDefault(); els.shell.classList.remove("dragging"); }));
   document.addEventListener("drop", event => loadFiles(event.dataTransfer.files));
+  window.addEventListener("beforeunload", stopWatching);
 })();

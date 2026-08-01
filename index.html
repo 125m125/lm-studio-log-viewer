@@ -16,6 +16,9 @@
     <div class="top-actions">
       <button id="open-files" class="button primary" type="button">Open log files</button>
       <input id="file-input" type="file" accept=".log,.txt,text/plain" multiple hidden>
+      <button id="watch-folder" class="button" type="button">Watch log folder</button>
+      <button id="stop-watch" class="button ghost" type="button" disabled>Stop watch</button>
+      <span id="live-status" class="live-status" role="status" aria-live="polite">Snapshot mode</span>
       <button id="clear-files" class="button ghost" type="button" disabled>Clear</button>
     </div>
   </header>
@@ -27,7 +30,6 @@
       <h2>Turn dense server logs into readable conversations.</h2>
       <p class="lede">Drop one or more LM Studio server logs here, or open them with the file picker. Everything stays in this browser tab.</p>
       <button id="welcome-open" class="button primary large" type="button">Choose log files</button>
-      <p class="sample-path">Validation log: <code>C:\Users\fabia\.lmstudio\server-logs\2026-06\2026-06-27.2.log</code></p>
     </section>
 
     <section id="workspace" class="workspace" hidden>
@@ -54,6 +56,7 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="parser.js"></script>
+  <script src="live-source.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

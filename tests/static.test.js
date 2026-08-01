@@ -35,3 +35,15 @@ test("detail rendering wires streamed packet evidence from the call fields", () 
   assert.match(app, /detailBlock\("Stream packets \("\s*\+\s*call\.streamPackets\.length\s*\+\s*"\)",\s*call\.streamPackets,\s*\{\s*copyKey:\s*"stream-packets"\s*\}\)/s);
   assert.match(app, /const copyMap = \{[^}]*"stream-packets": call\.streamPackets[^}]*\}/s);
 });
+
+test("live folder watching is wired through the source-neutral reducer", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(html, /id="watch-folder"/);
+  assert.match(html, /id="stop-watch"/);
+  assert.match(html, /id="live-status"/);
+  assert.match(app, /DirectoryTailSource/);
+  assert.match(app, /createLiveReducer/);
+  assert.match(app, /state\.query/);
+  assert.match(app, /state\.selectedId/);
+});
