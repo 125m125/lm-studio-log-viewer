@@ -125,7 +125,10 @@
     let picked;
     try { picked = await window.LMStudioLiveSource.openLogDirectoryHandle(); }
     catch (error) { if (error && error.name === "AbortError") return; return toast("Could not open that folder: " + error.message); }
-    if (!picked.supported) return toast("Use Chrome or Edge over HTTPS or localhost for live folder watching");
+    if (!picked.supported) {
+      if (picked.reason === "insecure-context") return toast("Live folder watching requires HTTPS or localhost; check the Live Server URL");
+      return toast("This browser does not support live folder watching; use desktop Chrome or Edge");
+    }
     state.result = { calls: [], threads: [], warnings: [], stats: { files: 1, calls: 0, matched: 0, incomplete: 0, uncertain: 0, threads: 0, promptTokens: 0, completionTokens: 0 } };
     state.selectedId = null; state.query = ""; state.status = "all"; state.model = "all";
     els.search.value = ""; els.status.value = "all";

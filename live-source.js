@@ -113,8 +113,12 @@
   }
 
   async function openLogDirectoryHandle() {
-    if (typeof window === "undefined" || !window.showDirectoryPicker)
-      return { supported: false, directory: null };
+    if (typeof window === "undefined")
+      return { supported: false, reason: "browser-api-unavailable", directory: null };
+    if (!window.isSecureContext)
+      return { supported: false, reason: "insecure-context", directory: null };
+    if (!window.showDirectoryPicker)
+      return { supported: false, reason: "browser-api-unavailable", directory: null };
     const handle = await window.showDirectoryPicker({ mode: "read" });
     return {
       supported: true,

@@ -65,3 +65,9 @@ test("switches to a newer log on rotation and warns on truncation", async () => 
   assert.equal(warnings.length, 1);
   assert.equal(warnings[0].kind, "truncated");
 });
+
+test("reports why directory watching is unavailable", async () => {
+  const capability = await require("../live-source.js").openLogDirectoryHandle();
+  assert.equal(capability.supported, false);
+  assert.equal(capability.reason, "browser-api-unavailable");
+});
