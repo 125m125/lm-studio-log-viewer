@@ -2,16 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add one-file live log tailing with incremental rendering while keeping the frontend independent from the eventual HTTP proxy source.
+**Goal:** Add directory-based live log watching with rotation-aware incremental rendering while keeping the frontend independent from the eventual HTTP proxy source.
 
-**Architecture:** Add a stateful incremental log parser and a source-neutral event/reducer boundary. A `FileTailSource` polls a File System Access API handle, emits appended text batches and source warnings, and the reducer updates the existing call/thread result. Request-to-stream association remains definitive only when evidence supports it; ambiguous log-only matches remain uncertain or unassigned.
+**Architecture:** Add a stateful incremental log parser and a source-neutral event/reducer boundary. A `DirectoryTailSource` polls a File System Access API directory handle, selects and follows the active log, emits appended text batches and rotation warnings, and the reducer updates the existing call/thread result. Request-to-stream association remains definitive only when evidence supports it; ambiguous log-only matches remain uncertain or unassigned.
 
 **Tech Stack:** Dependency-free browser JavaScript, File System Access API with fallback, CommonJS-compatible parser modules, browser Web Worker where applicable, Node built-in `node:test`.
 
 ## Global Constraints
 
 - Preserve existing one-shot multi-file import and streamed-response behavior.
-- Watch one file at a time; existing multi-file loading remains snapshot-only.
+- Watch one directory and one active log at a time; existing multi-file loading remains snapshot-only.
 - Do not add a backend, HTTP proxy, network dependency, persistence, or third-party package.
 - Never silently attach a stream to a request when multiple associations are plausible.
 - Buffer incomplete trailing lines and multiline JSON records until more bytes arrive.
@@ -21,7 +21,7 @@
 
 ## File map
 
-- Create `live-source.js`: source-neutral live source contract and `FileTailSource` polling implementation. No UI rendering.
+- Create `live-source.js`: source-neutral live source contract and `DirectoryTailSource` polling implementation. No UI rendering.
 - Modify `parser.js`: expose stateful incremental record parsing and normalized event application while retaining `parseFiles()` as the complete-file API.
 - Modify `app.js`: manage live source lifecycle, merge live reducer results into UI state, preserve filters/selection, and render live status.
 - Modify `index.html`: add watch controls and live status elements.
@@ -85,29 +85,29 @@ git add tests/parser.test.js parser.js
 git commit -m "feat: expose incremental log parsing"
 ```
 
-### Task 2: Build the file tail source
+### Task 2: Build the directory tail source
 
 **Files:**
 - Create: `live-source.js`
 - Create: `tests/live-source.test.js`
 
 **Interfaces:**
-- Consumes: a file handle or injected `{ getSize(), read(start, end) }` reader, polling interval, and callbacks.
-- Produces: `new FileTailSource(options)` with `start()`, `pause()`, `resume()`, and `stop()`; callbacks `onText({ sourceId, text, offset })`, `onStatus(status)`, and `onWarning(warning)`.
+- Consumes: a directory handle or injected directory/file adapter, polling interval, and callbacks.
+- Produces: `new DirectoryTailSource(options)` with `start()`, `pause()`, `resume()`, and `stop()`; callbacks `onText({ sourceId, fileName, text, offset })`, `onStatus(status)`, and `onWarning(warning)`.
 
-- [ ] **Step 1: Add failing tests for append-only reads and unchanged polls**
+- [ ] **Step 1: Add failing tests for active-file selection and unchanged polls**
 
-Use an in-memory reader whose text changes between manually triggered polls. Assert that the first poll reads from offset `0`, the second poll reads only the appended suffix, and a poll with unchanged size calls no read operation. Inject `readNow()` or an equivalent clock-free poll method so tests do not wait on real timers.
+Use an in-memory directory adapter whose entries include names, modification times, sizes, and readers. Assert that the source selects the newest `.log`, reads it from offset `0`, reads only the appended suffix on the next poll, and performs no file read when the active file is unchanged. Inject `readNow()` or an equivalent clock-free poll method so tests do not wait on real timers.
 
-- [ ] **Step 2: Add failing tests for truncation and partial append handling**
+- [ ] **Step 2: Add failing tests for rotation, truncation, and partial append handling**
 
-Assert that a smaller file size resets the offset to `0`, emits a `truncated` warning, and reads the new file content once. Assert that the source forwards a text chunk ending without a newline unchanged to the parser layer rather than discarding it.
+Assert that a newer `.log` entry switches the active source and starts reading it from offset `0` without replaying the previous file. Assert that a smaller active-file size resets the offset to `0`, emits a `truncated` warning, and reads the new file content once. Assert that the source forwards a text chunk ending without a newline unchanged to the parser layer rather than discarding it.
 
-- [ ] **Step 3: Implement `FileTailSource` with browser and test adapters**
+- [ ] **Step 3: Implement `DirectoryTailSource` with browser and test adapters**
 
-Implement the source around an injected reader. For a browser `FileSystemFileHandle`, call `getFile()` on each poll and read the byte range with `File.slice(start, end).text()`. Track `offset`, expose `status` values `idle`, `live`, `paused`, `stopped`, and `error`, and serialize polls so a slow read cannot overlap the next read. Use `setInterval` only in `start()`; keep `readNow()` available for tests and manual fallback refresh.
+Implement the source around an injected directory adapter. For a browser `FileSystemDirectoryHandle`, enumerate entries, filter `.log` files, choose the newest active entry by modification time/name, call `getFile()` on each poll, and read the byte range with `File.slice(start, end).text()`. Track the active file identity and offset, expose `status` values `idle`, `live`, `paused`, `stopped`, and `error`, and serialize polls so a slow read cannot overlap the next read. Use `setInterval` only in `start()`; keep `readNow()` available for tests.
 
-Add `openLogFileHandle()` that uses `window.showOpenFilePicker({ multiple: false, types: [...] })` when available. If unsupported, return a fallback descriptor that requires the caller to provide a newly selected `File` for each refresh; do not claim it is live.
+Add `openLogDirectoryHandle()` that uses `window.showDirectoryPicker({ mode: "read" })` when available. If unsupported, return a capability result that keeps snapshot import available and explains that live directory watching is unavailable. Do not claim the fallback is live.
 
 - [ ] **Step 4: Run source tests**
 
@@ -119,7 +119,7 @@ Expected: all source tests PASS without browser APIs.
 
 ```powershell
 git add tests/live-source.test.js live-source.js
-git commit -m "feat: add incremental file tail source"
+git commit -m "feat: add incremental directory tail source"
 ```
 
 ### Task 3: Add the live call reducer and uncertainty handling
@@ -168,20 +168,20 @@ git commit -m "feat: reduce live log events safely"
 - Modify: `tests/static.test.js`
 
 **Interfaces:**
-- Consumes: `FileTailSource`, `createIncrementalParser()`, and `createLiveReducer()`.
+- Consumes: `DirectoryTailSource`, `createIncrementalParser()`, and `createLiveReducer()`.
 - Produces: watch controls that start/stop one selected file and update the existing result without resetting filters or selection.
 
 - [ ] **Step 1: Add failing static contracts for controls and update preservation**
 
-Assert that `index.html` contains `watch-log`, `stop-watch`, and `live-status` elements; `app.js` references `FileTailSource`, `createLiveReducer`, and preserves `state.query`, `state.status`, `state.model`, and `state.selectedId` while applying changes; and the UI renders an uncertainty label for uncertain live calls.
+Assert that `index.html` contains `watch-folder`, `stop-watch`, and `live-status` elements; `app.js` references `DirectoryTailSource`, `createLiveReducer`, and preserves `state.query`, `state.status`, `state.model`, and `state.selectedId` while applying changes; and the UI renders an uncertainty label for uncertain live calls.
 
 - [ ] **Step 2: Add the controls and status markup**
 
-Add a `Watch log file` button, hidden single-file fallback input, `live-status` live region, last-update text, and stop/pause controls near the existing top actions. Keep `Open log files` and its multiple-file input unchanged.
+Add a `Watch log folder` button, `live-status` live region, last-update text, and stop/pause controls near the existing top actions. Keep `Open log files` and its multiple-file input unchanged.
 
 - [ ] **Step 3: Implement lifecycle and update wiring in `app.js`**
 
-Add `state.live` containing source, parser, reducer, `running`, and `lastUpdate`. Start the source from `showOpenFilePicker()` when supported, otherwise show the reselect fallback. On `onText`, pass text to the incremental parser, apply returned events to the reducer, assign `state.result`, repopulate models only when the model set changes, and call `render()` without clearing filters or selection. Keep the selected call ID if it still exists; select the first call only when no selection exists.
+Add `state.live` containing source, parser, reducer, `running`, and `lastUpdate`. Start the source from `showDirectoryPicker()` when supported, otherwise show an unsupported-browser explanation. On `onText`, pass text to the incremental parser, apply returned events to the reducer, assign `state.result`, repopulate models only when the model set changes, and call `render()` without clearing filters or selection. Keep the selected call ID if it still exists; select the first call only when no selection exists.
 
 Stop the source in `clearAll()` and on `beforeunload`. Surface status/warnings through the existing toast plus the live status region. Keep watch mode and one-shot import mutually clear: starting a watch replaces the current snapshot; opening files stops an active watch.
 
@@ -210,7 +210,7 @@ git commit -m "feat: show live log updates"
 
 - [ ] **Step 1: Update user documentation**
 
-Document `Watch log file`, the File System Access API requirement, the reselect fallback, one-file scope, polling behavior, and the fact that concurrent log-only request attribution is best-effort when no request ID is available.
+Document `Watch log folder`, the File System Access API requirement, the unsupported-browser snapshot fallback, active-log selection and rotation behavior, polling behavior, and the fact that concurrent log-only request attribution is best-effort when no request ID is available.
 
 - [ ] **Step 2: Run the complete automated suite and whitespace check**
 
@@ -239,6 +239,6 @@ git commit -m "docs: describe live log watching"
 
 ## Self-review
 
-- Spec coverage: source boundary and future proxy seam are covered by Tasks 1–2; incremental parsing and buffering by Task 1; tailing, pause/stop, and rotation by Task 2; correlation uncertainty by Task 3; UI state and warnings by Task 4; documentation and manual verification by Task 5.
+- Spec coverage: source boundary and future proxy seam are covered by Tasks 1–2; incremental parsing and buffering by Task 1; directory polling, active-file selection, pause/stop, truncation, and rotation by Task 2; correlation uncertainty by Task 3; UI state and warnings by Task 4; documentation and manual verification by Task 5.
 - Placeholder scan: every task names files, interfaces, tests, and commands; no incomplete implementation step remains.
-- Type consistency: `FileTailSource.onText` feeds `createIncrementalParser.push()`, whose normalized events feed `createLiveReducer.apply()`, and the reducer returns the existing `result` shape consumed by `app.js`.
+- Type consistency: `DirectoryTailSource.onText` feeds `createIncrementalParser.push()`, whose normalized events feed `createLiveReducer.apply()`, and the reducer returns the existing `result` shape consumed by `app.js`.

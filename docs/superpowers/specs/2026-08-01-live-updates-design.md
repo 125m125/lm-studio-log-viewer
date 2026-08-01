@@ -2,13 +2,13 @@
 
 ## Goal
 
-Add live updates to the viewer by tailing one selected LM Studio log file while keeping the frontend independent from the eventual event source. Preserve the existing one-shot multi-file import and make request/stream attribution honest when the logs do not contain a definitive correlation ID.
+Add live updates to the viewer by watching one selected LM Studio log directory while keeping the frontend independent from the eventual event source. Preserve the existing one-shot multi-file import and make request/stream attribution honest when the logs do not contain a definitive correlation ID.
 
 ## Context and constraints
 
 The current application reads complete files once and parses them into a snapshot. The parser already understands ordinary predictions and streamed `Generated packet:` records. LM Studio logs may interleave requests, but the available records do not reliably expose an ID linking every request to its response stream. Stream packet IDs can group packets within a stream, but they cannot necessarily identify the originating request.
 
-The browser cannot reliably observe changes through an ordinary `File` snapshot. Live tailing therefore uses a File System Access API file handle where available, with a user re-selection fallback for unsupported browsers. The feature remains local-only and adds no network dependency.
+The browser cannot reliably observe changes through an ordinary `File` snapshot. Live watching therefore uses a File System Access API directory handle where available, with snapshot-import fallback for unsupported browsers. The feature remains local-only and adds no network dependency. Browsers do not expose a portable filesystem notification mechanism for this API, so the directory is polled.
 
 ## Design
 
@@ -17,7 +17,7 @@ The browser cannot reliably observe changes through an ordinary `File` snapshot.
 Introduce a source-neutral live event boundary between input acquisition and call aggregation:
 
 ```text
-FileTailSource -> LogRecordParser -> CallReducer -> Frontend
+DirectoryTailSource -> LogRecordParser -> CallReducer -> Frontend
 ProxySource    -> CallReducer -> Frontend       (future)
 ```
 
@@ -34,16 +34,18 @@ The initial implementation may keep the existing parser’s internal structures 
 
 ### File tailing
 
-Add a one-file watch mode next to existing one-shot loading:
+Add a directory watch mode next to existing one-shot loading:
 
-- obtain a persistent file handle through `showOpenFilePicker()` when available;
-- poll the handle approximately every 750 ms while watching;
-- compare the current file size with the last consumed byte offset;
+- obtain a directory handle through `showDirectoryPicker()` when available;
+- enumerate matching `.log` entries approximately every 750 ms while watching;
+- choose the newest active log according to filename and modification time, while retaining the current file when it is still growing;
+- compare the active file size with the last consumed byte offset;
 - read only appended bytes and retain an incomplete trailing line or multiline JSON record until the next poll;
-- detect truncation or rotation when the current size is smaller than the stored offset, reset the tail safely, and expose a warning;
+- detect rotation when a newer matching log appears, finish the old file safely, and switch to the new file without replaying already consumed content;
+- detect truncation of the active file, reset that file's tail safely, and expose a warning;
 - stop and release the polling loop when the user stops watching, clears the workspace, or the page unloads.
 
-The fallback path reuses the existing file picker and explains that the user must reselect the file to refresh it. Existing complete-file import remains unchanged.
+The fallback path reuses the existing file picker for snapshot import and explains that directory watching requires a supporting browser. Existing complete-file import remains unchanged.
 
 ### Incremental parsing and aggregation
 
@@ -57,7 +59,7 @@ An unassigned stream remains visible as a live stream item with partial reconstr
 
 Add a compact live-control area with:
 
-- `Watch log file` action;
+- `Watch log folder` action;
 - live/paused/stopped state;
 - last update time;
 - stop/pause control;
@@ -98,4 +100,4 @@ Run the complete Node test suite and perform a manual browser check using a copy
 
 ## Scope boundaries
 
-This change does not implement an HTTP proxy, guarantee concurrent request attribution from logs, add persistence, or introduce a backend. It watches one file at a time; multi-file import remains available as a snapshot feature.
+This change does not implement an HTTP proxy, guarantee concurrent request attribution from logs, add persistence, or introduce a backend. It watches one directory and follows one active log at a time; multi-file import remains available as a snapshot feature.
