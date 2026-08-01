@@ -799,6 +799,135 @@
     };
   }
 
+  function createLiveReducer(sourceId) {
+    const eventMap = new Map();
+    const ambiguityWarnings = new Map();
+    let result = null;
+
+    function eventLine(event) {
+      const timestamp = event.timestampRaw || "1970-01-01 00:00:00";
+      const payload = event.payload || {};
+      if (event.kind === "request")
+        return (
+          "[" +
+          timestamp +
+          "][DEBUG] Received request: POST to /v1/chat/completions with body " +
+          JSON.stringify(payload)
+        );
+      if (event.kind === "run")
+        return (
+          "[" +
+          timestamp +
+          "][INFO][" +
+          (payload.model || "Unknown model") +
+          "] Running chat completion on conversation with " +
+          (payload.messageCount || 0) +
+          " messages."
+        );
+      if (event.kind === "prediction")
+        return (
+          "[" +
+          timestamp +
+          "][INFO][" +
+          (payload.model || "Unknown model") +
+          "] Generated prediction: " +
+          JSON.stringify(payload)
+        );
+      if (event.kind === "packet")
+        return (
+          "[" +
+          timestamp +
+          "][INFO][" +
+          (payload.model || "Unknown model") +
+          "] Generated packet: " +
+          JSON.stringify(payload)
+        );
+      if (event.kind === "finished")
+        return (
+          "[" +
+          timestamp +
+          "][INFO][" +
+          (payload.model || "Unknown model") +
+          "] Finished streaming response"
+        );
+      return "";
+    }
+
+    function apply(incoming) {
+      for (const event of incoming || []) {
+        const key = event.sourceId + "\u0000" + event.id;
+        if (!eventMap.has(key)) eventMap.set(key, event);
+      }
+      const ordered = [...eventMap.values()].sort(
+        (a, b) =>
+          a.lineStart - b.lineStart ||
+          a.lineEnd - b.lineEnd ||
+          a.id.localeCompare(b.id),
+      );
+      const text = ordered.map(eventLine).filter(Boolean).join("\n");
+      const next = parseFiles([{ name: sourceId, text }]);
+      const streamGroups = new Map();
+      for (const event of ordered) {
+        if (event.kind !== "packet" || !event.correlationId) continue;
+        const group = streamGroups.get(event.correlationId) || [];
+        group.push(event);
+        streamGroups.set(event.correlationId, group);
+      }
+      for (const [streamId, packets] of streamGroups) {
+        const first = packets[0];
+        const model = first.payload && first.payload.model;
+        const candidates = ordered.filter(
+          (event) =>
+            event.kind === "request" &&
+            event.lineStart < first.lineStart &&
+            event.payload &&
+            event.payload.stream === true &&
+            (!model || event.payload.model === model),
+        );
+        if (candidates.length < 2) continue;
+        const warningKey = streamId + ":" + first.lineStart;
+        const warning = {
+          sourceName: sourceId,
+          line: first.lineStart,
+          message:
+            "Ambiguous stream association for " +
+            streamId +
+            "; request attribution is uncertain",
+        };
+        ambiguityWarnings.set(warningKey, warning);
+        const matchingCall = next.calls.find(
+          (call) =>
+            call.stream &&
+            call.responseLineStart === first.lineStart &&
+            call.model === model,
+        );
+        if (matchingCall) {
+          matchingCall.status = "uncertain";
+          matchingCall.matchConfidence = "uncertain";
+        }
+      }
+      next.warnings = [
+        ...next.warnings,
+        ...ambiguityWarnings.values(),
+      ];
+      next.threads = buildThreads(next.calls);
+      next.stats.matched = next.calls.filter((call) => call.status === "matched").length;
+      next.stats.incomplete = next.calls.filter((call) => call.status === "incomplete").length;
+      next.stats.uncertain = next.calls.filter((call) => call.status === "uncertain").length;
+      const previousIds = new Set((result && result.calls || []).map((call) => call.id));
+      const nextIds = new Set(next.calls.map((call) => call.id));
+      const changes = {
+        addedCallIds: next.calls.filter((call) => !previousIds.has(call.id)).map((call) => call.id),
+        updatedCallIds: next.calls.filter((call) => previousIds.has(call.id)).map((call) => call.id),
+        warnings: next.warnings,
+      };
+      result = next;
+      return { result, changes };
+    }
+
+    return { apply };
+  }
+
   function lcsPairs(a, b) {
     const rows = a.length + 1,
       cols = b.length + 1;
@@ -1086,6 +1215,7 @@
   return {
     parseFiles,
     createIncrementalParser,
+    createLiveReducer,
     parseSource,
     buildThreads,
     stableStringify,

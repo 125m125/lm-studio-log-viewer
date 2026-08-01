@@ -931,3 +931,102 @@ test("incremental parser buffers split records and emits normalized events once"
   assert.equal(second.events[1].correlationId, "s-1");
   assert.equal(stream.push("").events.length, 0);
 });
+
+test("live reducer updates one call as streamed events arrive", () => {
+  const reducer = parser.createLiveReducer("tail.log");
+  const model = "test/model";
+  const requestEvent = {
+    id: "request-1",
+    sourceId: "tail.log",
+    kind: "request",
+    lineStart: 1,
+    lineEnd: 1,
+    timestampRaw: "2026-08-01 10:00:00",
+    timestamp: Date.parse("2026-08-01T10:00:00"),
+    payload: {
+      model,
+      stream: true,
+      messages: [{ role: "user", content: "hello" }],
+    },
+  };
+  const runEvent = {
+    id: "run-1",
+    sourceId: "tail.log",
+    kind: "run",
+    lineStart: 2,
+    lineEnd: 2,
+    timestampRaw: "2026-08-01 10:00:01",
+    timestamp: Date.parse("2026-08-01T10:00:01"),
+    payload: { model },
+  };
+  let update = reducer.apply([requestEvent, runEvent]);
+  assert.equal(update.result.calls.length, 1);
+  assert.equal(update.result.calls[0].status, "incomplete");
+  const callId = update.result.calls[0].id;
+
+  update = reducer.apply([
+    {
+      id: "packet-1",
+      sourceId: "tail.log",
+      correlationId: "stream-1",
+      kind: "packet",
+      lineStart: 3,
+      lineEnd: 3,
+      timestampRaw: "2026-08-01 10:00:02",
+      timestamp: Date.parse("2026-08-01T10:00:02"),
+      payload: {
+        id: "stream-1",
+        model,
+        choices: [
+          { delta: { role: "assistant", content: "Hello" }, finish_reason: null },
+        ],
+      },
+    },
+  ]);
+  assert.equal(update.result.calls[0].id, callId);
+  assert.equal(update.result.calls[0].outputMessage.content, "Hello");
+  assert.equal(update.result.calls[0].streamPackets.length, 1);
+});
+
+test("live reducer marks ambiguous stream attribution uncertain", () => {
+  const reducer = parser.createLiveReducer("ambiguous.log");
+  const base = (id, lineStart, content) => ({
+    id,
+    sourceId: "ambiguous.log",
+    kind: "request",
+    lineStart,
+    lineEnd: lineStart,
+    timestampRaw: "2026-08-01 10:00:0" + lineStart,
+    timestamp: Date.parse("2026-08-01T10:00:0" + lineStart),
+    payload: {
+      model: "test/model",
+      stream: true,
+      messages: [{ role: "user", content }],
+    },
+  });
+  const update = reducer.apply([
+    base("request-1", 1, "one"),
+    base("request-2", 2, "two"),
+    {
+      id: "packet-1",
+      sourceId: "ambiguous.log",
+      correlationId: "stream-1",
+      kind: "packet",
+      lineStart: 3,
+      lineEnd: 3,
+      timestampRaw: "2026-08-01 10:00:03",
+      timestamp: Date.parse("2026-08-01T10:00:03"),
+      payload: {
+        id: "stream-1",
+        model: "test/model",
+        choices: [{ delta: { content: "uncertain" }, finish_reason: "stop" }],
+      },
+    },
+  ]);
+  assert.equal(update.result.calls.filter((call) => call.stream).length, 2);
+  assert.ok(update.result.calls.some((call) => call.status === "uncertain"));
+  assert.match(
+    update.result.warnings.map((warning) => warning.message).join("\n"),
+    /ambiguous/i,
+  );
+});
