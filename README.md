@@ -4,7 +4,7 @@ A dependency-free, client-side viewer for LM Studio server logs. It reconstructs
 
 ## Use
 
-Open `index.html` in a modern browser, then drag in one or more `.log` files or use **Open log files**. No files or log contents leave the browser tab, and nothing is retained after the tab closes.
+Open the viewer from a modern browser, then drag in one or more `.log` files or use **Open log files**. For live updates, use **Watch log folder** and select the LM Studio server-log directory once. The viewer polls that directory locally, follows the newest active `.log`, and handles log rotation without requiring repeated uploads. No files or log contents leave the browser tab, and nothing is retained after the tab closes.
 
 For the supplied validation log, browse to:
 
@@ -16,6 +16,7 @@ The browser cannot open that path automatically because local-file access always
 
 - Multiline, string-aware JSON parsing for LM Studio request and prediction records
 - Streamed `Generated packet:` responses are reconstructed into final outputs while preserving packet-level delta evidence
+- Live folder watching with incremental updates and rotation handling (Chromium-based browsers over HTTPS or localhost)
 - Request/response matching using inference lifecycle markers
 - Explicit matched, uncertain, and incomplete states
 - Conversation reconstruction requiring identical initial system/user prompts, then using ordered message overlap for ancestry
@@ -33,3 +34,5 @@ node --test tests\parser.test.js
 ```
 
 Opening the viewer through a local HTTP server enables background parsing in a Web Worker, but this is optional. Under `file://`, it automatically uses the same parser directly.
+
+Live folder watching uses the browser File System Access API and requires a secure origin such as GitHub Pages, HTTPS, or localhost. Browsers without directory-picker support can still use one-shot file import. Because LM Studio logs do not always expose a request ID linking requests to streams, concurrent log-only attribution may be shown as uncertain.
