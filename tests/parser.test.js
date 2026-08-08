@@ -27,6 +27,42 @@ function prediction(model, content = "ok") {
   };
 }
 
+function minilogPrompt(time, body) {
+  return "[" + time + "] Prompt:\n" + JSON.stringify(body, null, 2);
+}
+
+function minilogToken(time, text) {
+  return "[" + time + "] token:" + text;
+}
+
+test("parses minilog prompts and reconstructs token responses", () => {
+  const text = [
+    minilogPrompt("1786211394", {
+      model: "m",
+      stream: false,
+      messages: [{ role: "user", content: "first" }],
+    }),
+    minilogToken("1786211395", "Hello"),
+    minilogToken("1786211395", " world"),
+    "[1786211395] Preserved token: 42",
+    minilogPrompt("1786211400", {
+      model: "m",
+      stream: true,
+      messages: [{ role: "user", content: "second" }],
+    }),
+    minilogToken("1786211401", "working"),
+  ].join("\n");
+  const result = parser.parseFiles([{ name: "request.log.log", text }], {
+    now: 1786211402 * 1000,
+  });
+  assert.equal(result.calls.length, 2);
+  assert.equal(result.calls[0].outputMessage.content, "Hello world");
+  assert.equal(result.calls[0].status, "matched");
+  assert.equal(result.calls[1].outputMessage.content, "working");
+  assert.equal(result.calls[1].status, "incomplete");
+  assert.equal(result.calls[1].stream, true);
+});
+
 test("parses and matches multiline request and prediction", () => {
   const model = "test/model";
   const text = [
@@ -932,6 +968,46 @@ test("incremental parser buffers split records and emits normalized events once"
   assert.equal(stream.push("").events.length, 0);
 });
 
+test("incremental minilog parser buffers split prompts and tokens", () => {
+  const stream = parser.createIncrementalParser("request.log.log");
+  assert.deepEqual(
+    stream.push(
+      '[1786211394] Prompt:\n{\n  "model": "m", "messages": [{',
+    ).events,
+    [],
+  );
+  const second = stream.push(
+    '"role":"user","content":"hello"}]}\n[1786211395] token:Hel',
+  );
+  assert.deepEqual(second.events.map((event) => event.kind), ["request"]);
+  const third = stream.push("lo\n");
+  assert.deepEqual(
+    third.events.map((event) => event.kind),
+    ["minilog-token"],
+  );
+  assert.equal(third.events[0].payload.text, "Hello");
+  assert.equal(third.events[0].correlationId, second.events[0].correlationId);
+});
+
+test("incremental minilog parser warns on orphan token lines", () => {
+  const stream = parser.createIncrementalParser("orphan.log");
+  const result = stream.push("[1786211395] token:orphan\n");
+  assert.deepEqual(result.events, []);
+  assert.match(result.warnings[0].message, /active Prompt/i);
+});
+
+test("incremental minilog parser buffers a prompt header without JSON", () => {
+  const stream = parser.createIncrementalParser("header-split.log");
+  assert.deepEqual(stream.push("[1786211394] Prompt:\n").events, []);
+  const result = stream.push(
+    '{"model":"m","messages":[]}\n[1786211395] token:done\n',
+  );
+  assert.deepEqual(
+    result.events.map((event) => event.kind),
+    ["request", "minilog-token"],
+  );
+});
+
 test("live reducer updates one call as streamed events arrive", () => {
   const reducer = parser.createLiveReducer("tail.log");
   const model = "test/model";
@@ -1006,6 +1082,91 @@ test("live reducer updates one call as streamed events arrive", () => {
   ]);
   assert.equal(update.result.calls[0].status, "matched");
   assert.equal(update.result.calls[0].streamComplete, true);
+});
+
+test("live reducer updates one minilog call as tokens arrive", () => {
+  const reducer = parser.createLiveReducer("request.log.log", {
+    now: 1786211402 * 1000,
+  });
+  const request = {
+    id: "prompt-1",
+    sourceId: "request.log.log",
+    correlationId: "prompt-1",
+    kind: "request",
+    format: "minilog",
+    lineStart: 1,
+    lineEnd: 4,
+    timestampRaw: "1786211394",
+    timestamp: 1786211394 * 1000,
+    payload: { model: "m", stream: true, messages: [] },
+    raw: "Prompt",
+  };
+  const token = {
+    id: "token-1",
+    sourceId: "request.log.log",
+    correlationId: "prompt-1",
+    kind: "minilog-token",
+    lineStart: 5,
+    lineEnd: 5,
+    timestampRaw: "1786211395",
+    timestamp: 1786211395 * 1000,
+    payload: { text: "Hello" },
+    raw: "token:Hello",
+  };
+  let update = reducer.apply([request]);
+  const callId = update.result.calls[0].id;
+  update = reducer.apply([token]);
+  assert.equal(update.result.calls[0].id, callId);
+  assert.equal(update.result.calls[0].outputMessage.content, "Hello");
+  assert.equal(update.result.calls[0].status, "incomplete");
+  update = reducer.apply([
+    {
+      ...request,
+      id: "prompt-2",
+      correlationId: "prompt-2",
+      lineStart: 6,
+      lineEnd: 9,
+      timestampRaw: "1786211400",
+      timestamp: 1786211400 * 1000,
+    },
+  ]);
+  assert.equal(update.result.calls[0].id, callId);
+  assert.equal(update.result.calls[0].status, "matched");
+  assert.equal(update.result.calls.length, 2);
+});
+
+test("live reducer closes an old final minilog call after five minutes", () => {
+  const reducer = parser.createLiveReducer("old.log", {
+    now: 1786211395 * 1000,
+  });
+  reducer.apply([
+    {
+      id: "old-prompt",
+      sourceId: "old.log",
+      correlationId: "old-prompt",
+      kind: "request",
+      format: "minilog",
+      lineStart: 1,
+      lineEnd: 4,
+      timestampRaw: "1786211000",
+      timestamp: 1786211000 * 1000,
+      payload: { model: "m", messages: [] },
+      raw: "Prompt",
+    },
+    {
+      id: "old-token",
+      sourceId: "old.log",
+      correlationId: "old-prompt",
+      kind: "minilog-token",
+      lineStart: 5,
+      lineEnd: 5,
+      timestampRaw: "1786211001",
+      timestamp: 1786211001 * 1000,
+      payload: { text: "done" },
+      raw: "token:done",
+    },
+  ]);
+  assert.equal(reducer.apply([]).result.calls[0].status, "matched");
 });
 
 test("live reducer marks ambiguous stream attribution uncertain", () => {

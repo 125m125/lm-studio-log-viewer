@@ -9,6 +9,9 @@
   const RESPONSE_MARKER = "Generated prediction:";
   const STREAM_PACKET_MARKER = "Generated packet:";
   const STREAM_FINISHED_MARKER = "Finished streaming response";
+  const MINILOG_PROMPT_RE = /^\[(\d+(?:\.\d+)?)\]\s+Prompt:\s*$/;
+  const MINILOG_TOKEN_RE = /^\[(\d+(?:\.\d+)?)\]\s+token:(.*)$/;
+  const MINILOG_STALE_MS = 5 * 60 * 1000;
   const RUN_RE =
     /^\[([^\]]+)\]\[INFO\]\[([^\]]+)\] Running chat completion on conversation with (\d+) messages\./;
   const HEADER_RE = /^\[([^\]]+)\]\[([A-Z]+)\](?:\[([^\]]+)\])?\s?(.*)$/;
@@ -41,6 +44,17 @@
     const normalized = raw.replace(" ", "T");
     const value = Date.parse(normalized);
     return Number.isNaN(value) ? null : value;
+  }
+
+  function parseUnixTimestamp(raw) {
+    const seconds = Number(raw);
+    return Number.isFinite(seconds) ? seconds * 1000 : null;
+  }
+
+  function getParserNow(options) {
+    if (options && typeof options.now === "function") return options.now();
+    if (options && Number.isFinite(options.now)) return options.now;
+    return Date.now();
   }
 
   function scanJson(lines, startLine, braceColumn) {
@@ -296,8 +310,119 @@
     return isStreamResponse ? candidates.at(-1) : candidates[0];
   }
 
-  function parseSource(source) {
+  function parseMinilogSource(source, options) {
+    const incremental = createIncrementalParser(source.name);
+    const first = incremental.push(source.text.replace(/^\uFEFF/, ""));
+    const last = incremental.finish();
+    const events = [...first.events, ...last.events];
+    const warnings = [...first.warnings, ...last.warnings];
+    const groups = [];
+    const byId = new Map();
+    for (const event of events) {
+      if (event.kind === "request") {
+        const group = {
+          request: event,
+          tokens: [],
+          latestTimestamp: event.timestamp,
+          closed: false,
+        };
+        groups.push(group);
+        byId.set(event.id, group);
+      } else if (event.kind === "minilog-token") {
+        const group = byId.get(event.correlationId);
+        if (!group) continue;
+        group.tokens.push(event);
+        group.latestTimestamp = event.timestamp || group.latestTimestamp;
+      }
+    }
+    const now = getParserNow(options);
+    const calls = groups.map((group, index) => {
+      const request = group.request;
+      const body = request.payload || {};
+      const tokens = group.tokens;
+      const tokenText = tokens.map((token) => token.payload.text).join("");
+      group.closed = index < groups.length - 1;
+      const stale =
+        Boolean(tokenText) &&
+        group.latestTimestamp != null &&
+        now - group.latestTimestamp >= MINILOG_STALE_MS;
+      const complete = Boolean(tokenText) && (group.closed || stale);
+      const outputMessage = tokenText
+        ? { role: "assistant", content: tokenText }
+        : null;
+      const response = outputMessage
+        ? {
+            id: "minilog-response-" + request.id,
+            object: "chat.completion",
+            model: body.model || null,
+            choices: [
+              { index: 0, message: outputMessage, finish_reason: null },
+            ],
+            usage: null,
+          }
+        : null;
+      const responseRaw = tokens.map((token) => token.raw).join("\n") || null;
+      const lineEnd = tokens.length
+        ? tokens.at(-1).lineEnd
+        : request.lineEnd;
+      return {
+        id: "call-" + source.index + "-" + (index + 1),
+        sourceName: source.name,
+        sourceIndex: source.index,
+        endpoint: "POST to /v1/chat/completions",
+        timestamp: request.timestamp,
+        timestampRaw: request.timestampRaw,
+        lineStart: request.lineStart,
+        model: body.model || "Unknown model",
+        stream: body.stream === true,
+        request: body,
+        requestRaw: request.raw,
+        messages: Array.isArray(body.messages)
+          ? body.messages.map(normalizeMessage)
+          : [],
+        response,
+        responseRaw,
+        responseLineStart: tokens.length ? tokens[0].lineStart : null,
+        outputMessage,
+        finishReason: null,
+        usage: null,
+        status: complete ? "matched" : "incomplete",
+        streamPackets: [],
+        streamComplete: complete,
+        matchMethod: "minilog-boundary",
+        matchConfidence: "high",
+        durationMs:
+          request.timestamp != null && group.latestTimestamp != null
+            ? Math.max(0, group.latestTimestamp - request.timestamp)
+            : null,
+        rawContext: {
+          from: request.lineStart,
+          to: lineEnd,
+          text: [request.raw, responseRaw].filter(Boolean).join("\n"),
+        },
+        parseError: null,
+      };
+    });
+    return {
+      calls,
+      warnings,
+      lineCount: source.text.split(/\r?\n/).length,
+      source: { name: source.name, size: source.text.length, index: source.index },
+      events: {
+        requests: [],
+        responses: [],
+        streamPackets: [],
+        streamFinished: [],
+        runs: [],
+        minilog: events,
+      },
+    };
+  }
+
+  function parseSource(source, options) {
     const lines = source.text.replace(/^\uFEFF/, "").split(/\r?\n/);
+    if (lines.some((line) => MINILOG_PROMPT_RE.test(line)))
+      return parseMinilogSource(source, options);
     const requests = [],
       responses = [],
       runs = [],
@@ -767,6 +892,8 @@
     let buffer = "";
     let lineBase = 1;
     let finished = false;
+    let activeMinilogId = null;
+    let minilogSequence = 0;
 
     function lineCount(text) {
       return (text.match(/\n/g) || []).length;
@@ -802,12 +929,102 @@
       return event;
     }
 
+    function minilogEvent(kind, match, raw, payload, lineEnd) {
+      const id =
+        kind === "request"
+          ? "minilog-request-" + sourceId + "-" + lineBase
+          : "minilog-token-" + sourceId + "-" + lineBase + "-" + ++minilogSequence;
+      return {
+        id,
+        sourceId,
+        correlationId: kind === "request" ? id : activeMinilogId,
+        kind,
+        format: "minilog",
+        timestamp: parseUnixTimestamp(match[1]),
+        timestampRaw: match[1],
+        lineStart: lineBase,
+        lineEnd,
+        payload,
+        raw,
+        confidence: "inferred",
+      };
+    }
+
     function process(final) {
       const events = [];
       const warnings = [];
       while (buffer) {
         const newline = buffer.indexOf("\n");
         const firstLine = (newline < 0 ? buffer : buffer.slice(0, newline)).replace(/\r$/, "");
+        const minilogPrompt = MINILOG_PROMPT_RE.exec(firstLine);
+        if (minilogPrompt) {
+          if (newline < 0) {
+            if (!final) break;
+            warnings.push({ sourceName: sourceId, line: lineBase, message: "Prompt JSON is truncated" });
+            break;
+          }
+          const brace = buffer.indexOf("{", newline + 1);
+          if (brace < 0) {
+            if (!final) break;
+            warnings.push({ sourceName: sourceId, line: lineBase, message: "Prompt JSON has no object body" });
+            consume(newline + 1);
+            continue;
+          }
+          let depth = 0;
+          let inString = false;
+          let escaped = false;
+          let end = -1;
+          for (let index = brace; index < buffer.length; index++) {
+            const ch = buffer[index];
+            if (inString) {
+              if (escaped) escaped = false;
+              else if (ch === "\\") escaped = true;
+              else if (ch === '"') inString = false;
+            } else if (ch === '"') inString = true;
+            else if (ch === "{") depth++;
+            else if (ch === "}" && --depth === 0) {
+              end = index;
+              break;
+            }
+          }
+          if (end < 0) {
+            if (!final) break;
+            warnings.push({ sourceName: sourceId, line: lineBase, message: "Prompt JSON is truncated" });
+            break;
+          }
+          const rawJson = buffer.slice(brace, end + 1);
+          let data;
+          try {
+            data = JSON.parse(rawJson);
+          } catch (error) {
+            warnings.push({ sourceName: sourceId, line: lineBase, message: error.message });
+          }
+          if (data) {
+            const raw = buffer.slice(0, end + 1);
+            const event = minilogEvent(
+              "request",
+              minilogPrompt,
+              raw,
+              data,
+              lineBase + lineCount(buffer.slice(0, end + 1)),
+            );
+            events.push(event);
+            activeMinilogId = event.id;
+          }
+          consume(end + 1 < buffer.length && buffer[end + 1] === "\n" ? end + 2 : end + 1);
+          continue;
+        }
+        const minilogToken = MINILOG_TOKEN_RE.exec(firstLine);
+        if (minilogToken) {
+          if (newline < 0 && !final) break;
+          if (!activeMinilogId) {
+            warnings.push({ sourceName: sourceId, line: lineBase, message: "Minilog token has no active Prompt" });
+          } else {
+            events.push(minilogEvent("minilog-token", minilogToken, firstLine, { text: minilogToken[2] }, lineBase));
+          }
+          consume(newline < 0 ? buffer.length : newline + 1);
+          continue;
+        }
         const marker = firstLine.includes(REQUEST_MARKER)
           ? [REQUEST_MARKER, "request"]
           : firstLine.includes(RESPONSE_MARKER)
@@ -912,12 +1129,15 @@
     };
   }
 
-  function createLiveReducer(sourceId) {
+  function createLiveReducer(sourceId, options) {
+    options = options || {};
     const seen = new Set();
     const requests = [];
     const requestByEvent = new Map();
     const streams = new Map();
     const streamToCall = new Map();
+    const minilogCalls = new Map();
+    const activeMinilogBySource = new Map();
     const warnings = new Map();
     const sources = new Set();
     let eventOrder = 0;
@@ -978,9 +1198,78 @@
         },
         parseError: null,
       };
-      requests.push({ event, call, run: null, response: null, order: eventOrder++ });
-      requestByEvent.set(event.id, requests.at(-1));
+      const request = {
+        event,
+        call,
+        run: null,
+        response: null,
+        order: eventOrder++,
+        minilog:
+          event.format === "minilog"
+            ? {
+                correlationId: event.correlationId,
+                tokens: [],
+                text: "",
+                latestTimestamp: event.timestamp,
+                closed: false,
+              }
+            : null,
+      };
+      requests.push(request);
+      requestByEvent.set(event.id, request);
       return call;
+    }
+
+    function minilogKey(event) {
+      return event.sourceId + "\u0000" + event.correlationId;
+    }
+
+    function refreshMinilog(request) {
+      const minilog = request.minilog;
+      if (!minilog) return;
+      const call = request.call;
+      const outputMessage = minilog.text
+        ? { role: "assistant", content: minilog.text }
+        : null;
+      const response = outputMessage
+        ? {
+            id: "minilog-response-" + request.event.id,
+            object: "chat.completion",
+            model: call.model === "Unknown model" ? null : call.model,
+            choices: [
+              { index: 0, message: outputMessage, finish_reason: null },
+            ],
+            usage: null,
+          }
+        : null;
+      const stale =
+        Boolean(outputMessage) &&
+        minilog.latestTimestamp != null &&
+        getParserNow(options) - minilog.latestTimestamp >= MINILOG_STALE_MS;
+      const complete = Boolean(outputMessage) && (minilog.closed || stale);
+      call.response = response;
+      call.responseRaw = minilog.tokens.map((token) => token.raw).join("\n") || null;
+      call.responseLineStart = minilog.tokens.length
+        ? minilog.tokens[0].lineStart
+        : null;
+      call.outputMessage = outputMessage;
+      call.finishReason = null;
+      call.usage = null;
+      call.streamComplete = complete;
+      call.status = complete ? "matched" : "incomplete";
+      call.matchMethod = "minilog-boundary";
+      call.matchConfidence = "high";
+      call.durationMs =
+        call.timestamp != null && minilog.latestTimestamp != null
+          ? Math.max(0, minilog.latestTimestamp - call.timestamp)
+          : null;
+      call.rawContext = {
+        from: call.lineStart,
+        to: minilog.tokens.length
+          ? minilog.tokens.at(-1).lineEnd
+          : request.event.lineEnd,
+        text: [call.requestRaw, call.responseRaw].filter(Boolean).join("\n"),
+      };
     }
 
     function eligibleRequests(event, stream) {
@@ -1062,7 +1351,20 @@
         const event = { ...original, order: eventOrder++ };
         sources.add(event.sourceId);
         if (event.kind === "request") {
+          if (event.format === "minilog") {
+            const previous = activeMinilogBySource.get(event.sourceId);
+            if (previous && previous.minilog) {
+              previous.minilog.closed = true;
+              refreshMinilog(previous);
+            }
+          }
           const call = newCall(event);
+          const request = requests.at(-1);
+          if (event.format === "minilog") {
+            minilogCalls.set(minilogKey(event), request);
+            activeMinilogBySource.set(event.sourceId, request);
+            refreshMinilog(request);
+          }
           addedCallIds.push(call.id);
           addedRequest = true;
         } else if (event.kind === "run") {
@@ -1073,6 +1375,25 @@
               (!event.payload.model || request.call.model === event.payload.model),
           );
           if (candidates.length) candidates.at(-1).run = event;
+        } else if (event.kind === "minilog-token") {
+          const request = minilogCalls.get(minilogKey(event));
+          if (!request) {
+            warnings.set(event.id, {
+              sourceName: event.sourceId,
+              line: event.lineStart,
+              message: "Minilog token has no active Prompt",
+            });
+            continue;
+          }
+          const text = event.payload && typeof event.payload.text === "string"
+            ? event.payload.text
+            : "";
+          request.minilog.text += text;
+          request.minilog.tokens.push(event);
+          request.minilog.latestTimestamp =
+            event.timestamp || request.minilog.latestTimestamp;
+          refreshMinilog(request);
+          updatedCallIds.add(request.call.id);
         } else if (event.kind === "prediction") {
           const request = requests.find(
             (candidate) => !candidate.response && !candidate.call.stream && candidate.event.order < event.order,
@@ -1137,6 +1458,9 @@
             if (id) updatedCallIds.add(id);
           }
         }
+      }
+      for (const request of requests) {
+        if (request.minilog) refreshMinilog(request);
       }
       if (!result) result = emptyResult();
       result.calls = requests.map((request) => request.call);
@@ -1291,7 +1615,7 @@
     );
   }
 
-  function parseFiles(files) {
+  function parseFiles(files, options) {
     const normalizedFiles = files
       .map((file, index) => ({
         name: file.name || "log-" + (index + 1),
@@ -1304,7 +1628,7 @@
         }),
       )
       .map((file, index) => ({ ...file, index }));
-    const parsed = normalizedFiles.map(parseSource);
+    const parsed = normalizedFiles.map((file) => parseSource(file, options));
     if (normalizedFiles.length === 1) {
       const only = parsed[0];
       const logicalKey = (call) =>
@@ -1415,7 +1739,7 @@
       name: normalizedFiles.map((file) => file.name).join(", "),
       text: unifiedText,
       index: 0,
-    });
+    }, options);
     const calls = unified.calls;
     const threads = buildThreads(calls);
     return {

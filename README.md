@@ -12,9 +12,14 @@ For the supplied validation log, browse to:
 
 The browser cannot open that path automatically because local-file access always requires a user gesture.
 
+llama.cpp-style minilog files such as `request.log.log` are also supported. Their
+`Prompt:` JSON blocks and following `token:` lines are reconstructed into calls
+for both one-shot import and live folder watching.
+
 ## Features
 
 - Multiline, string-aware JSON parsing for LM Studio request and prediction records
+- llama.cpp `--minilog` prompt parsing with reconstructed token responses
 - Streamed `Generated packet:` responses are reconstructed into final outputs while preserving packet-level delta evidence
 - Live folder watching with incremental updates and rotation handling (Chromium-based browsers over HTTPS or localhost)
 - Request/response matching using inference lifecycle markers

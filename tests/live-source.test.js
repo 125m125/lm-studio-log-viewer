@@ -143,3 +143,22 @@ test("uses the file byte size as the next read offset", async () => {
   await source.readNow();
   assert.equal(reads, 1);
 });
+
+test("tails a double-extension minilog file", async () => {
+  const directory = memoryDirectory();
+  directory.files.set("request.log.log", {
+    name: "request.log.log",
+    modified: 1,
+    text: "[1786211394] Prompt:\n{}\n",
+  });
+  const chunks = [];
+  const source = new DirectoryTailSource({
+    directory,
+    onText: (chunk) => chunks.push(chunk),
+  });
+
+  await source.readNow();
+
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].fileName, "request.log.log");
+});
