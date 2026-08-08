@@ -233,8 +233,16 @@
     const delta = call.delta || { added: [] };
     const isAdded = delta.added.includes(message.index);
     const text = contentText(message.content);
+    const reasoning = contentText(message.reasoningContent);
+    const preview = compact(message.content) || (reasoning ? "Reasoning: " + compact(message.reasoningContent) : "");
     const roleTone = ["system", "user", "assistant", "tool"].includes(message.role) ? message.role : "other";
-    return '<details class="message-card ' + roleTone + (isAdded && call.predecessorId ? " added" : "") + '"' + (message.index === call.messages.length - 1 ? " open" : "") + '><summary><span class="role-badge">' + escapeHtml(message.role) + '</span><span class="message-preview">' + escapeHtml(compact(message.content).slice(0, 150) || "(empty content)") + '</span><span class="message-size">' + formatNumber(text.length) + ' chars</span></summary><div class="message-body"><button class="copy-button" data-copy-message="' + message.index + '" type="button">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre>" + (message.toolCalls ? '<div class="subpayload"><span>Tool calls</span><pre>' + escapeHtml(JSON.stringify(message.toolCalls, null, 2)) + "</pre></div>" : "") + "</div></details>";
+    const reasoningBlock = reasoning
+      ? '<div class="subpayload"><span>Reasoning</span><pre>' + escapeHtml(reasoning) + "</pre></div>"
+      : "";
+    const toolCallsBlock = message.toolCalls
+      ? '<div class="subpayload"><span>Tool calls</span><pre>' + escapeHtml(JSON.stringify(message.toolCalls, null, 2)) + "</pre></div>"
+      : "";
+    return '<details class="message-card ' + roleTone + (isAdded && call.predecessorId ? " added" : "") + '"' + (message.index === call.messages.length - 1 ? " open" : "") + '><summary><span class="role-badge">' + escapeHtml(message.role) + '</span><span class="message-preview">' + escapeHtml(preview.slice(0, 150) || "(empty content)") + '</span><span class="message-size">' + formatNumber(text.length) + ' chars</span></summary><div class="message-body"><button class="copy-button" data-copy-message="' + message.index + '" type="button">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre>" + reasoningBlock + toolCallsBlock + "</div></details>";
   }
 
   function renderDetail() {

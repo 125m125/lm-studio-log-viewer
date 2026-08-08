@@ -132,6 +132,11 @@
         message && Object.prototype.hasOwnProperty.call(message, "content")
           ? message.content
           : null,
+      reasoningContent:
+        message &&
+        Object.prototype.hasOwnProperty.call(message, "reasoning_content")
+          ? message.reasoning_content
+          : null,
       toolCallId: (message && message.tool_call_id) || null,
       toolCalls: (message && message.tool_calls) || null,
       raw: message || {},
@@ -141,6 +146,7 @@
         role: normalized.role,
         name: normalized.name,
         content: normalized.content,
+        reasoningContent: normalized.reasoningContent,
         toolCallId: normalized.toolCallId,
         toolCalls: normalized.toolCalls,
       }),
@@ -294,6 +300,56 @@
     return { response, outputMessage: message, finishReason, usage };
   }
 
+  function minilogOutputMessage(text) {
+    if (!text) return null;
+    const endThinking = text.indexOf("</think>");
+    const message = {
+      role: "assistant",
+      content: endThinking < 0 ? text : text.slice(endThinking + "</think>".length),
+    };
+    if (endThinking >= 0)
+      message.reasoning_content = text.slice(0, endThinking);
+
+    const toolCalls = [];
+    const removals = [];
+    const blockPattern = /<tool_call>\s*<function=([^>\s]+)>([\s\S]*?)<\/function>\s*<\/tool_call>/g;
+    let block;
+    while ((block = blockPattern.exec(message.content))) {
+      const functionName = block[1];
+      const body = block[2];
+      const parameters = {};
+      const parameterPattern = /<parameter=([^>\s]+)>([\s\S]*?)<\/parameter>/g;
+      let cursor = 0;
+      let parameter;
+      let valid = true;
+      while ((parameter = parameterPattern.exec(body))) {
+        if (body.slice(cursor, parameter.index).trim()) {
+          valid = false;
+          break;
+        }
+        parameters[parameter[1]] = parameter[2];
+        cursor = parameterPattern.lastIndex;
+      }
+      if (body.slice(cursor).trim()) valid = false;
+      if (!valid) continue;
+      toolCalls.push({
+        index: toolCalls.length,
+        type: "function",
+        function: {
+          name: functionName,
+          arguments: JSON.stringify(parameters),
+        },
+      });
+      removals.push([block.index, block.index + block[0].length]);
+    }
+    for (let index = removals.length - 1; index >= 0; index--) {
+      const [start, end] = removals[index];
+      message.content = message.content.slice(0, start) + message.content.slice(end);
+    }
+    if (toolCalls.length) message.tool_calls = toolCalls;
+    return message;
+  }
+
   function contextFor(lines, start, end, radius) {
     const from = Math.max(0, start - 1 - radius);
     const to = Math.min(lines.length, end + radius);
@@ -347,9 +403,7 @@
         group.latestTimestamp != null &&
         now - group.latestTimestamp >= MINILOG_STALE_MS;
       const complete = Boolean(tokenText) && (group.closed || stale);
-      const outputMessage = tokenText
-        ? { role: "assistant", content: tokenText }
-        : null;
+      const outputMessage = minilogOutputMessage(tokenText);
       const response = outputMessage
         ? {
             id: "minilog-response-" + request.id,
@@ -1017,12 +1071,34 @@
         const minilogToken = MINILOG_TOKEN_RE.exec(firstLine);
         if (minilogToken) {
           if (newline < 0 && !final) break;
+          let tokenLength = newline < 0 ? buffer.length : newline + 1;
           if (!activeMinilogId) {
             warnings.push({ sourceName: sourceId, line: lineBase, message: "Minilog token has no active Prompt" });
           } else {
-            events.push(minilogEvent("minilog-token", minilogToken, firstLine, { text: minilogToken[2] }, lineBase));
+            let tokenText = minilogToken[2];
+            if (tokenText === "" && newline >= 0) {
+              let offset = tokenLength;
+              let newlineCount = 0;
+              while (offset < buffer.length) {
+                if (buffer[offset] === "\r") {
+                  if (offset + 1 >= buffer.length && !final) break;
+                  if (buffer[offset + 1] !== "\n") break;
+                  offset += 2;
+                } else if (buffer[offset] === "\n") {
+                  offset++;
+                } else {
+                  break;
+                }
+                newlineCount++;
+              }
+              if (!final && offset === buffer.length) break;
+              tokenText += "\n".repeat(newlineCount);
+              tokenLength = offset;
+            }
+            const raw = buffer.slice(0, tokenLength);
+            events.push(minilogEvent("minilog-token", minilogToken, firstLine, { text: tokenText }, lineBase + lineCount(raw)));
           }
-          consume(newline < 0 ? buffer.length : newline + 1);
+          consume(newline < 0 ? buffer.length : tokenLength);
           continue;
         }
         const marker = firstLine.includes(REQUEST_MARKER)
@@ -1228,9 +1304,7 @@
       const minilog = request.minilog;
       if (!minilog) return;
       const call = request.call;
-      const outputMessage = minilog.text
-        ? { role: "assistant", content: minilog.text }
-        : null;
+      const outputMessage = minilogOutputMessage(minilog.text);
       const response = outputMessage
         ? {
             id: "minilog-response-" + request.event.id,

@@ -63,6 +63,91 @@ test("parses minilog prompts and reconstructs token responses", () => {
   assert.equal(result.calls[1].stream, true);
 });
 
+test("preserves minilog newline tokens and separates hidden reasoning", () => {
+  const text = [
+    minilogPrompt("1786211394", {
+      model: "m",
+      stream: true,
+      messages: [{ role: "user", content: "thinking" }],
+    }),
+    minilogToken("1786211395", "First line"),
+    minilogToken("1786211395", ""),
+    "",
+    minilogToken("1786211395", "second"),
+    minilogToken("1786211395", "</thi"),
+    minilogToken("1786211395", "nk>"),
+    minilogToken("1786211395", "answer"),
+  ].join("\n");
+  const result = parser.parseFiles([{ name: "request.log.log", text }]);
+  const output = result.calls[0].outputMessage;
+  assert.equal(output.reasoning_content, "First line\nsecond");
+  assert.equal(output.content, "answer");
+});
+
+test("parses and removes complete minilog tool-call markup", () => {
+  const toolCall =
+    "<tool_call><function=read_file><parameter=path>action.yml</parameter><parameter=limit>30</parameter></function></tool_call>";
+  const text = [
+    minilogPrompt("1786211394", { model: "m", stream: true, messages: [] }),
+    minilogToken("1786211395", "before "),
+    minilogToken("1786211395", toolCall),
+    minilogToken("1786211395", " after"),
+  ].join("\n");
+  const call = parser.parseFiles([{ name: "request.log.log", text }]).calls[0];
+  assert.equal(call.outputMessage.content, "before  after");
+  assert.deepEqual(call.outputMessage.tool_calls, [
+    {
+      index: 0,
+      type: "function",
+      function: {
+        name: "read_file",
+        arguments: JSON.stringify({ path: "action.yml", limit: "30" }),
+      },
+    },
+  ]);
+  assert.match(call.responseRaw, /<tool_call>/);
+});
+
+test("keeps malformed minilog tool-call markup visible", () => {
+  const malformed =
+    "<tool_call><function=read_file><parameter=path>action.yml</function></tool_call>";
+  const text = [
+    minilogPrompt("1786211394", { model: "m", stream: true, messages: [] }),
+    minilogToken("1786211395", "before "),
+    minilogToken("1786211395", malformed),
+    minilogToken("1786211395", " after"),
+  ].join("\n");
+  const output = parser.parseFiles([{ name: "request.log.log", text }]).calls[0]
+    .outputMessage;
+  assert.equal(output.content, "before " + malformed + " after");
+  assert.equal(output.tool_calls, undefined);
+});
+
+test("preserves passed-back assistant reasoning in normalized messages", () => {
+  const makeCall = (reasoning, name) =>
+    parser.parseFiles([
+      {
+        name,
+        text: minilogPrompt("1786211394", {
+          model: "m",
+          messages: [
+            {
+              role: "assistant",
+              content: "answer",
+              reasoning_content: reasoning,
+              tool_calls: [],
+            },
+          ],
+        }),
+      },
+    ]).calls[0];
+  const first = makeCall("first thought", "first.log").messages[0];
+  const second = makeCall("second thought", "second.log").messages[0];
+  assert.equal(first.reasoningContent, "first thought");
+  assert.notEqual(first.fingerprint, second.fingerprint);
+  assert.equal(first.raw.reasoning_content, "first thought");
+});
+
 test("parses and matches multiline request and prediction", () => {
   const model = "test/model";
   const text = [
@@ -989,6 +1074,28 @@ test("incremental minilog parser buffers split prompts and tokens", () => {
   assert.equal(third.events[0].correlationId, second.events[0].correlationId);
 });
 
+test("incremental minilog parser preserves newline tokens across chunks", () => {
+  const stream = parser.createIncrementalParser("request.log.log");
+  const first = stream.push(
+    minilogPrompt("1786211394", { model: "m", messages: [] }) +
+      "\n[1786211395] token:before\n[1786211395] token:\n",
+  );
+  assert.deepEqual(
+    first.events.map((event) => event.payload && event.payload.text),
+    [undefined, "before"],
+  );
+
+  const second = stream.push("\n[1786211395] token:after");
+  assert.deepEqual(
+    second.events.map((event) => event.payload.text),
+    ["\n"],
+  );
+  assert.deepEqual(
+    stream.finish().events.map((event) => event.payload.text),
+    ["after"],
+  );
+});
+
 test("incremental minilog parser warns on orphan token lines", () => {
   const stream = parser.createIncrementalParser("orphan.log");
   const result = stream.push("[1786211395] token:orphan\n");
@@ -1133,6 +1240,45 @@ test("live reducer updates one minilog call as tokens arrive", () => {
   assert.equal(update.result.calls[0].id, callId);
   assert.equal(update.result.calls[0].status, "matched");
   assert.equal(update.result.calls.length, 2);
+});
+
+test("live minilog reducer preserves newlines and separates hidden reasoning", () => {
+  const reducer = parser.createLiveReducer("request.log.log");
+  const request = {
+    id: "prompt-1",
+    sourceId: "request.log.log",
+    correlationId: "prompt-1",
+    kind: "request",
+    format: "minilog",
+    lineStart: 1,
+    lineEnd: 4,
+    timestampRaw: "1786211394",
+    timestamp: 1786211394 * 1000,
+    payload: { model: "m", stream: true, messages: [] },
+    raw: "Prompt",
+  };
+  reducer.apply([request]);
+  const token = (id, text) => ({
+    id,
+    sourceId: "request.log.log",
+    correlationId: "prompt-1",
+    kind: "minilog-token",
+    lineStart: 5,
+    lineEnd: 5,
+    timestampRaw: "1786211395",
+    timestamp: 1786211395 * 1000,
+    payload: { text },
+    raw: "token:" + text,
+  });
+  let update = reducer.apply([token("token-1", "First line")]);
+  update = reducer.apply([token("token-2", "\n")]);
+  update = reducer.apply([token("token-3", "second")]);
+  update = reducer.apply([token("token-4", "</thi")]);
+  update = reducer.apply([token("token-5", "nk>")]);
+  update = reducer.apply([token("token-6", "answer")]);
+  const output = update.result.calls[0].outputMessage;
+  assert.equal(output.reasoning_content, "First line\nsecond");
+  assert.equal(output.content, "answer");
 });
 
 test("live reducer closes an old final minilog call after five minutes", () => {

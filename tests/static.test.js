@@ -36,6 +36,12 @@ test("detail rendering wires streamed packet evidence from the call fields", () 
   assert.match(app, /const copyMap = \{[^}]*"stream-packets": call\.streamPackets[^}]*\}/s);
 });
 
+test("assistant request messages render passed-back reasoning", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(app, /message\.reasoningContent/);
+  assert.match(app, /Reasoning/);
+});
+
 test("live folder watching is wired through the source-neutral reducer", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");

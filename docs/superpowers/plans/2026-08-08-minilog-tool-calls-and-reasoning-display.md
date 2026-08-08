@@ -27,10 +27,10 @@
 - Consumes: reconstructed minilog text after `</think>` splitting.
 - Produces: `{ content, tool_calls }` fields compatible with existing streamed-response output.
 
-- [ ] **Step 1: Write failing tests** for a minilog response containing `<tool_call>`, a named function, two parameters, and surrounding text; assert the call shape and that markup is absent from `content`. Add a malformed/incomplete block test that keeps markup visible.
-- [ ] **Step 2: Run `node --test tests/parser.test.js`** and confirm the new assertions fail because minilog output currently has no `tool_calls` extraction.
-- [ ] **Step 3: Implement the smallest parser** that extracts complete blocks, decodes their function and parameter tags, removes only successfully parsed blocks, and leaves incomplete blocks untouched.
-- [ ] **Step 4: Run the focused parser tests** and confirm they pass.
+- [x] **Step 1: Write failing tests** for a minilog response containing `<tool_call>`, a named function, two parameters, and surrounding text; assert the call shape and that markup is absent from `content`. Add a malformed/incomplete block test that keeps markup visible.
+- [x] **Step 2: Run `node --test tests/parser.test.js`** and confirm the new assertions fail because minilog output currently has no `tool_calls` extraction.
+- [x] **Step 3: Implement the smallest parser** that extracts complete blocks, decodes their function and parameter tags, removes only successfully parsed blocks, and leaves incomplete blocks untouched.
+- [x] **Step 4: Run the focused parser tests** and confirm they pass.
 
 ### Task 2: Preserve reasoning in normalized request messages
 
@@ -42,10 +42,10 @@
 - Consumes: request message objects with optional `reasoning_content`.
 - Produces: normalized messages with `reasoningContent` and fingerprints that distinguish different reasoning.
 
-- [ ] **Step 1: Write a failing parser test** asserting assistant request messages preserve `reasoning_content` and that changed reasoning changes the normalized fingerprint.
-- [ ] **Step 2: Run the focused test** and confirm the normalized message lacks the field or has an unchanged fingerprint.
-- [ ] **Step 3: Add `reasoningContent` normalization and fingerprint input** without changing the original `raw` message.
-- [ ] **Step 4: Run parser tests** and confirm they pass.
+- [x] **Step 1: Write a failing parser test** asserting assistant request messages preserve `reasoning_content` and that changed reasoning changes the normalized fingerprint.
+- [x] **Step 2: Run the focused test** and confirm the normalized message lacks the field or has an unchanged fingerprint.
+- [x] **Step 3: Add `reasoningContent` normalization and fingerprint input** without changing the original `raw` message.
+- [x] **Step 4: Run parser tests** and confirm they pass.
 
 ### Task 3: Render assistant reasoning and tool calls in request messages
 
@@ -57,16 +57,16 @@
 - Consumes: normalized message `reasoningContent` and `toolCalls` fields.
 - Produces: assistant message cards containing visible reasoning and existing structured tool-call details.
 
-- [ ] **Step 1: Write a failing static rendering test** requiring assistant message rendering to reference `reasoningContent` and label the rendered block as Reasoning.
-- [ ] **Step 2: Run the focused static test** and confirm it fails against the current renderer.
-- [ ] **Step 3: Render a Reasoning subpayload** for non-empty assistant reasoning and retain the existing Tool calls subpayload.
-- [ ] **Step 4: Run static tests** and confirm they pass.
+- [x] **Step 1: Write a failing static rendering test** requiring assistant message rendering to reference `reasoningContent` and label the rendered block as Reasoning.
+- [x] **Step 2: Run the focused static test** and confirm it fails against the current renderer.
+- [x] **Step 3: Render a Reasoning subpayload** for non-empty assistant reasoning and retain the existing Tool calls subpayload.
+- [x] **Step 4: Run static tests** and confirm they pass.
 
 ### Task 4: Full verification
 
 **Files:**
 - Verify: `parser.js`, `app.js`, `tests/parser.test.js`, `tests/static.test.js`
 
-- [ ] **Step 1: Run `git diff --check`.**
-- [ ] **Step 2: Run `node --test tests/*.test.js` and confirm all tests pass.**
-- [ ] **Step 3: Smoke-test the active sample log and verify tool calls/reasoning are present while raw evidence remains available.**
+- [x] **Step 1: Run `git diff --check`.**
+- [x] **Step 2: Run `node --test tests/*.test.js` and confirm all tests pass.**
+- [x] **Step 3: Smoke-test the active sample log and verify tool calls/reasoning are present while raw evidence remains available.**
