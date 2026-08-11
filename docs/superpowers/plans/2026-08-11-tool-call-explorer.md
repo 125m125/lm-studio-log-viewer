@@ -4,7 +4,7 @@
 
 **Goal:** Add a collapsible exploration tray that inventories deduplicated assistant tool invocations and navigates between invocations in the selected conversation or all loaded history.
 
-**Architecture:** Add a dependency-free `tool-explorer.js` UMD module containing pure indexing, scoping, inventory, and state-reconciliation functions that can be tested directly in Node. Keep DOM rendering and navigation in `app.js`, using stable record and target IDs from the module to render individually addressable tool-call entries and drive the collapsible tray.
+**Architecture:** Add a dependency-free `tool-explorer.js` UMD module containing pure indexing, scoping, inventory, and state-reconciliation functions, plus a focused `tool-explorer-view.js` UMD module that renders explorer HTML from explicit inputs; both can be tested directly in Node. Keep DOM event wiring and navigation effects in `app.js`, using stable record and target IDs from the modules to drive the collapsible tray.
 
 **Tech Stack:** Plain HTML, CSS, browser JavaScript, CommonJS-compatible Node.js modules, and the built-in `node:test` runner; no build process or external dependencies.
 
@@ -25,10 +25,11 @@
 
 - Create `tool-explorer.js`: pure normalized invocation indexing, deduplication, scope selection, inventory, and explorer-state reconciliation.
 - Create `tests/tool-explorer.test.js`: focused unit tests for the module's public contract and edge cases.
-- Modify `index.html`: load `tool-explorer.js` before `app.js`.
+- Create `tool-explorer-view.js`: pure HTML rendering for invocation entries and the exploration tray.
+- Create `tests/tool-explorer-view.test.js`: observable-output tests for rendered controls, entries, and empty states.
+- Modify `index.html`: load both explorer modules before `app.js`.
 - Modify `app.js`: exploration state, tray rendering, individually addressable invocation rendering, event handling, and jump/focus behavior.
 - Modify `styles.css`: collapsed/expanded tray, tool chips, invocation cards, highlight, focus, and responsive styles.
-- Modify `tests/static.test.js`: integration assertions for script order, accessible controls, stable render targets, and live-update wiring.
 - Modify `README.md`: mention tool inventory and navigation in the feature list.
 
 ### Public Module Contract
@@ -427,43 +428,49 @@ git commit -m "feat: derive tool explorer views"
 ### Task 3: Render individually addressable tool invocations
 
 **Files:**
+- Create: `tool-explorer-view.js`
+- Create: `tests/tool-explorer-view.test.js`
 - Modify: `index.html`
 - Modify: `app.js`
 - Modify: `styles.css`
-- Modify: `tests/static.test.js`
 
 **Interfaces:**
 - Consumes: `window.LMStudioToolExplorer.buildInvocationIndex(state.result)` and `InvocationRecord.target`.
-- Produces: DOM elements whose IDs equal `record.target.domId`, with `data-tool-record-id`, a focusable destination, per-invocation copy controls, and expandable request/response containers.
+- Produces: `LMStudioToolExplorerView.renderToolInvocations(toolCalls, records, copyPrefix)` and DOM elements whose IDs equal `record.target.domId`, with `data-tool-record-id`, a focusable destination, and per-invocation copy controls.
 
-- [ ] **Step 1: Write failing static integration tests**
+- [ ] **Step 1: Write a failing observable-output test for invocation rendering**
 
-Add tests that require:
+Create `tests/tool-explorer-view.test.js`:
 
 ```js
-test("tool explorer loads before the application", () => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
-  assert.match(html, /<script src="tool-explorer\.js"><\/script>\s*<script src="app\.js"><\/script>/);
-});
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const view = require("../tool-explorer-view.js");
 
-test("tool invocations render as individually addressable entries", () => {
-  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
-  assert.match(app, /function renderToolInvocations/);
-  assert.match(app, /data-tool-record-id/);
-  assert.match(app, /data-copy-tool/);
-  assert.match(app, /target\.domId/);
+test("renders an addressable and focusable invocation with safe content", () => {
+  const html = view.renderToolInvocations(
+    [{ function: { name: "<search>", arguments: '{"q":"<logs>"}' } }],
+    [{ id: "record-1", target: { domId: "tool-invocation-abc", toolIndex: 0 } }],
+    "response",
+  );
+  assert.match(html, /id="tool-invocation-abc"/);
+  assert.match(html, /tabindex="-1"/);
+  assert.match(html, /data-tool-record-id="record-1"/);
+  assert.match(html, /data-copy-tool="response:0"/);
+  assert.match(html, /&lt;search&gt;/);
+  assert.doesNotMatch(html, /<search>/);
 });
 ```
 
-- [ ] **Step 2: Run the static tests and verify they fail**
+- [ ] **Step 2: Run the view test and verify the module is missing**
 
-Run: `node --test tests/static.test.js`
+Run: `node --test tests/tool-explorer-view.test.js`
 
-Expected: FAIL because the module script and granular renderer are absent.
+Expected: FAIL because `../tool-explorer-view.js` cannot be resolved.
 
-- [ ] **Step 3: Load the module and add explorer-derived render lookup**
+- [ ] **Step 3: Create the view module, load both modules, and add explorer-derived render lookup**
 
-Insert `<script src="tool-explorer.js"></script>` after `live-source.js` and before `app.js`.
+Create a CommonJS/browser UMD wrapper following the parser's established pattern. Insert `<script src="tool-explorer.js"></script>` and then `<script src="tool-explorer-view.js"></script>` after `live-source.js` and before `app.js`.
 
 In `app.js`, create one index per render/result update rather than recomputing it per tool entry:
 
@@ -483,7 +490,7 @@ function recordsForTarget(callId, source, messageIndex) {
 
 Cache the array on `state.explorer.records` and rebuild it only after file load or live-result mutation. Do not call `buildInvocationIndex` from each message renderer.
 
-- [ ] **Step 4: Implement one shared tool-invocation renderer**
+- [ ] **Step 4: Implement one shared pure tool-invocation renderer**
 
 ```js
 function renderToolInvocations(toolCalls, records, copyPrefix) {
@@ -500,15 +507,15 @@ function renderToolInvocations(toolCalls, records, copyPrefix) {
 }
 ```
 
-Use it for `message.toolCalls` inside an expandable request message and for `output.tool_calls` inside a dedicated open response payload. Keep the existing whole-array `response-tools` copy behavior only if it remains useful; each invocation must have its own copy action.
+Give `tool-explorer-view.js` its own private `escapeHtml` helper and export `renderToolInvocations`. Use it from `app.js` for `message.toolCalls` inside an expandable request message and for `output.tool_calls` inside a dedicated open response payload. Keep the existing whole-array `response-tools` copy behavior only if it remains useful; each invocation must have its own copy action.
 
 - [ ] **Step 5: Wire invocation copy controls and styles**
 
 Build a per-render `Map` from `copyPrefix:index` to the original tool-call object, then call `copyText(contentText(value))`. Style `.tool-invocation`, `.tool-invocation-head`, and argument `<pre>` consistently with existing payloads. Add visible `:focus` styling.
 
-- [ ] **Step 6: Run static and full tests**
+- [ ] **Step 6: Run view and full tests**
 
-Run: `node --test tests/static.test.js`
+Run: `node --test tests/tool-explorer-view.test.js`
 
 Expected: PASS with 0 failures.
 
@@ -519,7 +526,7 @@ Expected: PASS with 0 failures.
 - [ ] **Step 7: Commit granular tool rendering**
 
 ```powershell
-git add -- index.html app.js styles.css tests/static.test.js
+git add -- tool-explorer-view.js tests/tool-explorer-view.test.js index.html app.js styles.css
 git commit -m "feat: render addressable tool invocations"
 ```
 
@@ -528,42 +535,42 @@ git commit -m "feat: render addressable tool invocations"
 ### Task 4: Add the collapsible exploration tray and navigation
 
 **Files:**
+- Modify: `tool-explorer-view.js`
+- Modify: `tests/tool-explorer-view.test.js`
 - Modify: `app.js`
 - Modify: `styles.css`
-- Modify: `tests/static.test.js`
 
 **Interfaces:**
 - Consumes: all five `LMStudioToolExplorer` public functions and stable invocation DOM targets.
-- Produces: persistent `state.explorer`, tray markup, scope/type controls, preview, bounded Previous/Next navigation, and exact jump behavior.
+- Produces: `LMStudioToolExplorerView.renderExplorerTray(viewModel)`, persistent `state.explorer`, scope/type controls, preview, bounded Previous/Next navigation, and exact jump behavior.
 
-- [ ] **Step 1: Write failing static tests for tray controls and state**
+- [ ] **Step 1: Write a failing observable-output test for tray controls**
 
 ```js
-test("exploration tray exposes accessible persistent controls", () => {
-  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
-  assert.match(app, /explorer:\s*\{[^}]*open:\s*false[^}]*scope:\s*"conversation"/s);
-  assert.match(app, /aria-expanded/);
-  assert.match(app, /aria-pressed/);
-  assert.match(app, /Current conversation/);
-  assert.match(app, /All loaded history/);
-  assert.match(app, /data-explorer-previous/);
-  assert.match(app, /data-explorer-next/);
-});
-
-test("tool navigation expands focuses scrolls and highlights its destination", () => {
-  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
-  assert.match(app, /scrollIntoView/);
-  assert.match(app, /classList\.add\("tool-jump-highlight"\)/);
-  assert.match(app, /\.focus\(/);
-  assert.match(app, /closest\("details"\)/);
+test("renders accessible scope type and bounded navigation controls", () => {
+  const html = view.renderExplorerTray({
+    open: true,
+    scope: "conversation",
+    types: [{ name: "search", count: 2 }],
+    selectedType: "search",
+    position: 0,
+    total: 2,
+    preview: { name: "search", arguments: "{}", time: "12:00", model: "m", callId: "call-1" },
+  });
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /data-explorer-scope="conversation" aria-pressed="true"/);
+  assert.match(html, /data-explorer-type="search" aria-pressed="true"/);
+  assert.match(html, /data-explorer-previous[^>]*disabled/);
+  assert.match(html, /data-explorer-next/);
+  assert.match(html, /1 of 2/);
 });
 ```
 
-- [ ] **Step 2: Run static tests and verify they fail**
+- [ ] **Step 2: Run the view test and verify the new behavior fails**
 
-Run: `node --test --test-name-pattern="exploration tray|tool navigation" tests/static.test.js`
+Run: `node --test --test-name-pattern="scope type" tests/tool-explorer-view.test.js`
 
-Expected: FAIL because the tray and jump logic do not exist.
+Expected: FAIL because `renderExplorerTray` is not implemented.
 
 - [ ] **Step 3: Add persistent explorer state and reconciliation**
 
@@ -585,7 +592,7 @@ Add `rebuildExplorerIndex()` after snapshot parsing and each live reducer update
 
 - [ ] **Step 4: Render the collapsed and expanded tray above detail content**
 
-Create `renderExplorerTray(call)` and prepend its result inside `els.detail`:
+Implement `renderExplorerTray(viewModel)` in `tool-explorer-view.js`; call it from `app.js` and prepend its result inside `els.detail`:
 
 ```html
 <section class="explorer-tray">
@@ -635,9 +642,9 @@ For request sources, ensure the containing message `<details>` is opened. For re
 
 Add styles for `.explorer-tray`, `.explorer-panel`, `.explorer-toolbar`, `.explorer-types`, `.explorer-type`, `.explorer-navigation`, `.explorer-preview`, and `.tool-jump-highlight`. At `max-width: 800px`, keep the tray in normal flow, set `.explorer-types { overflow-x: auto; }`, stack preview metadata, and prevent page-width overflow. Under `@media (prefers-reduced-motion: reduce)`, set highlight transitions and animations to `none`; in `jumpToInvocation`, choose `behavior: "auto"` when `matchMedia("(prefers-reduced-motion: reduce)").matches` and `"smooth"` otherwise.
 
-- [ ] **Step 8: Run static and full automated tests**
+- [ ] **Step 8: Run view, state, and full automated tests**
 
-Run: `node --test tests/static.test.js`
+Run: `node --test tests/tool-explorer-view.test.js tests/tool-explorer.test.js`
 
 Expected: PASS with 0 failures.
 
@@ -661,7 +668,7 @@ Serve the repository over localhost, load a log containing at least two tool typ
 - [ ] **Step 10: Commit the exploration tray**
 
 ```powershell
-git add -- app.js styles.css tests/static.test.js
+git add -- tool-explorer-view.js tests/tool-explorer-view.test.js app.js styles.css
 git commit -m "feat: navigate tool invocations"
 ```
 
@@ -670,36 +677,48 @@ git commit -m "feat: navigate tool invocations"
 ### Task 5: Harden live updates, empty states, and documentation
 
 **Files:**
+- Modify: `tool-explorer.js`
 - Modify: `app.js`
-- Modify: `tests/static.test.js`
+- Modify: `tests/tool-explorer.test.js`
 - Modify: `README.md`
 
 **Interfaces:**
 - Consumes: `rebuildExplorerIndex()`, `getExplorerView()`, existing `loadFiles`, `flushLiveUpdates`, `startWatching`, and `clearAll` lifecycle paths.
 - Produces: deterministic explorer behavior for snapshot replacement, live mutation, empty results, stale selections, and clearing.
 
-- [ ] **Step 1: Write failing lifecycle wiring tests**
+- [ ] **Step 1: Write a failing state-reconciliation test for changing result data**
 
 ```js
-test("explorer index follows snapshot and live result changes", () => {
-  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
-  const loadFiles = app.slice(app.indexOf("async function loadFiles"), app.indexOf("function populateModels"));
-  const flush = app.slice(app.indexOf("function flushLiveUpdates"), app.indexOf("function scheduleLiveFlush"));
-  assert.match(loadFiles, /rebuildExplorerIndex\(\)/);
-  assert.match(flush, /rebuildExplorerIndex\(\)/);
-  assert.match(app, /No tool invocations found in this scope\./);
+test("updates records while preserving tray state and reconciling a stale occurrence", () => {
+  const after = records("search", ["one", "two"]);
+  const updated = explorer.reconcileExplorerUpdate({
+    open: true,
+    module: "tool-calls",
+    scope: "history",
+    records: records("search", ["one", "two", "three"]),
+    selectedType: "search",
+    selectedRecordId: "three",
+    position: 2,
+  }, after);
+  assert.equal(updated.open, true);
+  assert.equal(updated.scope, "history");
+  assert.equal(updated.records, after);
+  assert.equal(updated.selectedRecordId, "two");
+  assert.equal(updated.position, 1);
 });
 ```
 
-Add an assertion that `clearAll` empties cached records and selected occurrence while retaining the default module contract.
+The `records` fixture returns literal `InvocationRecord` objects; it does not call production helpers to derive expected values. The browser regression checklist verifies that each application lifecycle calls the already-tested index and reconciliation functions.
 
-- [ ] **Step 2: Run the lifecycle test and verify it fails if any path is unwired**
+- [ ] **Step 2: Run the reconciliation test and verify it fails before the fallback is hardened**
 
-Run: `node --test --test-name-pattern="explorer index follows" tests/static.test.js`
+Run: `node --test --test-name-pattern="updates records" tests/tool-explorer.test.js`
 
-Expected: FAIL until every lifecycle path explicitly updates explorer state.
+Expected: FAIL because `reconcileExplorerUpdate` is not exported.
 
 - [ ] **Step 3: Wire and reconcile every result lifecycle**
+
+First implement and export `reconcileExplorerUpdate(state, records)`. It calls `reconcileSelection(records, state.selectedType, state.selectedRecordId, state.position)` and returns a new state object that preserves `open`, `module`, and `scope`, replaces `records`, and applies the reconciled selection fields. Use this helper from each lifecycle below.
 
 Ensure:
 
@@ -731,7 +750,7 @@ Verify one-shot file loading, folder watching, clearing, text search, status fil
 - [ ] **Step 7: Commit lifecycle hardening and documentation**
 
 ```powershell
-git add -- app.js tests/static.test.js README.md
+git add -- tool-explorer.js app.js tests/tool-explorer.test.js README.md
 git commit -m "docs: finish tool explorer integration"
 ```
 
@@ -742,6 +761,8 @@ git commit -m "docs: finish tool explorer integration"
 **Files:**
 - Verify: `tool-explorer.js`
 - Verify: `tests/tool-explorer.test.js`
+- Verify: `tool-explorer-view.js`
+- Verify: `tests/tool-explorer-view.test.js`
 - Verify: `index.html`
 - Verify: `app.js`
 - Verify: `styles.css`
