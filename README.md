@@ -27,6 +27,7 @@ for both one-shot import and live folder watching.
 - Conversation reconstruction requiring identical initial system/user prompts, then using ordered message overlap for ancestry
 - Added/removed message summaries between related calls
 - Collapsible messages, reasoning, content, tool calls, usage, and raw evidence
+- Collapsible tool-call explorer with per-function inventories and Previous/Next navigation across the selected conversation or all loaded history
 - Multi-file loading, filtering, and full-text search
 - No server, build process, dependencies, network calls, or local persistence
 

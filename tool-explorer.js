@@ -132,5 +132,16 @@
     return { selectedType: type, selectedRecordId: matching[position] ? matching[position].id : null, position, matching };
   }
 
-  return { buildInvocationIndex, getThreadIdForCall, getScopedInvocations, summarizeToolTypes, reconcileSelection };
+  function reconcileExplorerUpdate(state, records) {
+    const selection = reconcileSelection(records, state.selectedType, state.selectedRecordId, state.position);
+    return {
+      ...state,
+      records,
+      selectedType: selection.selectedType,
+      selectedRecordId: selection.selectedRecordId,
+      position: selection.position,
+    };
+  }
+
+  return { buildInvocationIndex, getThreadIdForCall, getScopedInvocations, summarizeToolTypes, reconcileSelection, reconcileExplorerUpdate };
 });

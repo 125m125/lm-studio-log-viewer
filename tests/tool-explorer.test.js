@@ -6,6 +6,23 @@ function tool(id, name, args) {
   return { id, type: "function", function: { name, arguments: args } };
 }
 
+function records(name, ids) {
+  return ids.map((id, index) => ({
+    id,
+    identity: "id:" + id,
+    threadId: "thread-root",
+    name,
+    arguments: "{}",
+    parsedArguments: {},
+    logicalMessageIndex: index,
+    toolIndex: 0,
+    timestamp: index,
+    timestampRaw: null,
+    model: "model",
+    target: { callId: "call-" + id, source: "request", messageIndex: index, toolIndex: 0, domId: "tool-" + id },
+  }));
+}
+
 function resultWith(calls) {
   return {
     calls,
@@ -178,4 +195,22 @@ test("reconciles retained types and stale records to bounded navigation position
   assert.equal(nearest.selectedRecordId, recordsForSearch[1].id);
   assert.equal(first.position === 0, true);
   assert.equal(last.position === last.matching.length - 1, true);
+});
+
+test("updates records while preserving tray state and reconciling a stale occurrence", () => {
+  const after = records("search", ["one", "two"]);
+  const updated = explorer.reconcileExplorerUpdate({
+    open: true,
+    module: "tool-calls",
+    scope: "history",
+    records: records("search", ["one", "two", "three"]),
+    selectedType: "search",
+    selectedRecordId: "three",
+    position: 2,
+  }, after);
+  assert.equal(updated.open, true);
+  assert.equal(updated.scope, "history");
+  assert.equal(updated.records, after);
+  assert.equal(updated.selectedRecordId, "two");
+  assert.equal(updated.position, 1);
 });

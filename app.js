@@ -36,7 +36,8 @@
   }
   function invocationRecords() { return state.explorer.records; }
   function rebuildExplorerIndex() {
-    state.explorer.records = state.result ? window.LMStudioToolExplorer.buildInvocationIndex(state.result) : [];
+    const records = state.result ? window.LMStudioToolExplorer.buildInvocationIndex(state.result) : [];
+    state.explorer = window.LMStudioToolExplorer.reconcileExplorerUpdate(state.explorer, records);
   }
   function recordsForTarget(callId, source, messageIndex) {
     return invocationRecords().filter(record =>
@@ -148,6 +149,7 @@
   function clearAll() {
     stopWatching();
     state.result = null; state.selectedId = null; els.input.value = "";
+    state.explorer = { ...state.explorer, module: "tool-calls", scope: "conversation" };
     rebuildExplorerIndex();
     els.shell.classList.add("empty"); els.workspace.hidden = true; els.welcome.hidden = false; els.clear.disabled = true;
     els.detail.textContent = ""; els.list.textContent = "";
