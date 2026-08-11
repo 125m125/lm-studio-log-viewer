@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   const $ = id => document.getElementById(id);
-  const state = { result: null, selectedId: null, query: "", status: "all", model: "all", loading: false, live: null };
+  const state = { result: null, selectedId: null, query: "", status: "all", model: "all", loading: false, live: null, explorer: { records: [] } };
   const els = {
     shell: $("app-shell"), welcome: $("drop-zone"), workspace: $("workspace"), input: $("file-input"),
     open: $("open-files"), welcomeOpen: $("welcome-open"), watch: $("watch-folder"), stopWatch: $("stop-watch"), liveStatus: $("live-status"), diagnostics: $("live-diagnostics"), diagnosticsOutput: $("live-diagnostics-output"), clear: $("clear-files"), search: $("search"),
@@ -16,6 +16,17 @@
     if (value == null) return "";
     if (typeof value === "string") return value;
     return JSON.stringify(value, null, 2);
+  }
+  function invocationRecords() { return state.explorer.records; }
+  function rebuildInvocationRecords() {
+    state.explorer.records = state.result ? window.LMStudioToolExplorer.buildInvocationIndex(state.result) : [];
+  }
+  function recordsForTarget(callId, source, messageIndex) {
+    return invocationRecords().filter(record =>
+      record.target.callId === callId &&
+      record.target.source === source &&
+      record.target.messageIndex === messageIndex
+    );
   }
   function compact(value) { return contentText(value).replace(/\s+/g, " ").trim(); }
   function formatNumber(n) { return new Intl.NumberFormat().format(n || 0); }
@@ -65,6 +76,7 @@
     try {
       const files = await Promise.all(chosen.map(async file => ({ name: file.name, text: await file.text() })));
       state.result = await runParser(files);
+      rebuildInvocationRecords();
       state.selectedId = state.result.threads[0] && state.result.threads[0].calls.at(-1).id || null;
       state.query = ""; state.status = "all"; state.model = "all";
       els.search.value = ""; els.status.value = "all";
@@ -87,6 +99,7 @@
   function clearAll() {
     stopWatching();
     state.result = null; state.selectedId = null; els.input.value = "";
+    rebuildInvocationRecords();
     els.shell.classList.add("empty"); els.workspace.hidden = true; els.welcome.hidden = false; els.clear.disabled = true;
     els.detail.textContent = ""; els.list.textContent = "";
   }
@@ -123,6 +136,7 @@
     if (!events.length) return;
     const update = state.live.reducer.apply(events);
     state.result = update.result;
+    rebuildInvocationRecords();
     if (!state.selectedId && state.result.calls[0]) state.selectedId = state.result.calls[0].id;
     populateModels();
     if (update.changes.addedCallIds.length) render();
@@ -164,6 +178,7 @@
       return toast("This browser does not support live folder watching; use desktop Chrome or Edge");
     }
     state.result = { calls: [], threads: [], warnings: [], stats: { files: 1, calls: 0, matched: 0, incomplete: 0, uncertain: 0, threads: 0, promptTokens: 0, completionTokens: 0 } };
+    rebuildInvocationRecords();
     state.selectedId = null; state.query = ""; state.status = "all"; state.model = "all";
     els.search.value = ""; els.status.value = "all";
     const live = { parser: null, parsers: new Map(), reducer: window.LMStudioLogParser.createLiveReducer("live-folder"), fileName: null, lastUpdate: null, diagnostics: [], pendingEvents: [], flushScheduled: false, source: null };
@@ -229,7 +244,13 @@
     return '<details class="payload"' + (options.open ? " open" : "") + '><summary><span>' + escapeHtml(label) + '</span><span class="payload-info">' + formatNumber(text.length) + ' chars</span></summary><div class="payload-body"><button class="copy-button" type="button" data-copy="' + escapeHtml(options.copyKey || label) + '" aria-label="Copy ' + escapeHtml(label) + '">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre></div></details>";
   }
 
-  function renderMessage(message, call) {
+  function renderInvocationBlock(toolCalls, records, copyPrefix, toolCopies) {
+    if (!Array.isArray(toolCalls) || !toolCalls.length) return "";
+    toolCalls.forEach((toolCall, index) => toolCopies.set(copyPrefix + ":" + index, toolCall));
+    return window.LMStudioToolExplorerView.renderToolInvocations(toolCalls, records, copyPrefix);
+  }
+
+  function renderMessage(message, call, toolCopies) {
     const delta = call.delta || { added: [] };
     const isAdded = delta.added.includes(message.index);
     const text = contentText(message.content);
@@ -239,8 +260,8 @@
     const reasoningBlock = reasoning
       ? '<div class="subpayload"><span>Reasoning</span><pre>' + escapeHtml(reasoning) + "</pre></div>"
       : "";
-    const toolCallsBlock = message.toolCalls
-      ? '<div class="subpayload"><span>Tool calls</span><pre>' + escapeHtml(JSON.stringify(message.toolCalls, null, 2)) + "</pre></div>"
+    const toolCallsBlock = Array.isArray(message.toolCalls) && message.toolCalls.length
+      ? '<div class="subpayload"><span>Tool calls</span>' + renderInvocationBlock(message.toolCalls, recordsForTarget(call.id, "request", message.index), "request:" + call.id + ":" + message.index, toolCopies) + "</div>"
       : "";
     return '<details class="message-card ' + roleTone + (isAdded && call.predecessorId ? " added" : "") + '"' + (message.index === call.messages.length - 1 ? " open" : "") + '><summary><span class="role-badge">' + escapeHtml(message.role) + '</span><span class="message-preview">' + escapeHtml(preview.slice(0, 150) || "(empty content)") + '</span><span class="message-size">' + formatNumber(text.length) + ' chars</span></summary><div class="message-body"><button class="copy-button" data-copy-message="' + message.index + '" type="button">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre>" + reasoningBlock + toolCallsBlock + "</div></details>";
   }
@@ -250,6 +271,7 @@
     if (!call) { els.detail.innerHTML = '<div class="detail-empty">No request selected.</div>'; return; }
     state.selectedId = call.id;
     const output = call.outputMessage || {};
+    const toolCopies = new Map();
     const delta = call.delta || { retained: 0, removed: [], added: [] };
     const responseMeta = call.stream ? ((call.finishReason ? call.finishReason + " · " : "") + call.streamPackets.length + " packets") : (call.finishReason || statusLabel(call.status));
     const streamNote = call.stream && !call.streamComplete ? '<p class="stream-note">Partial stream: logging ended before the terminal packet.</p>' : "";
@@ -258,14 +280,15 @@
     els.detail.innerHTML =
       '<header class="detail-head"><div><div class="detail-kicker"><span class="status-pill ' + call.status + '">' + statusLabel(call.status) + '</span><span>' + escapeHtml(call.timestampRaw) + '</span></div><h2>' + escapeHtml(call.model) + '</h2><p>' + escapeHtml(call.endpoint) + ' · ' + escapeHtml(call.sourceName) + ':' + call.lineStart + '</p></div><div class="duration"><span>Round trip</span><strong>' + escapeHtml(formatDuration(call.durationMs)) + "</strong></div></header>" +
       ancestry +
-      '<section class="section"><div class="section-title"><div><span>01</span><h3>Request messages</h3></div><small>' + call.messages.length + ' total</small></div><div class="messages">' + call.messages.map(message => renderMessage(message, call)).join("") + "</div></section>" +
+      '<section class="section"><div class="section-title"><div><span>01</span><h3>Request messages</h3></div><small>' + call.messages.length + ' total</small></div><div class="messages">' + call.messages.map(message => renderMessage(message, call, toolCopies)).join("") + "</div></section>" +
       '<section class="section response-section"><div class="section-title"><div><span>02</span><h3>Response</h3></div><small>' + escapeHtml(responseMeta) + "</small></div>" +
-      (call.response ? '<div class="response-grid">' + detailBlock("Content", output.content, { open: true, showEmpty: true, copyKey: "response-content" }) + detailBlock("Reasoning", output.reasoning_content, { open: !!output.reasoning_content, copyKey: "response-reasoning" }) + detailBlock("Tool calls", output.tool_calls, { open: !!output.tool_calls, copyKey: "response-tools" }) + '</div>' + streamNote + '<div class="usage-row"><span>Prompt <strong>' + formatNumber(call.usage && call.usage.prompt_tokens) + '</strong></span><span>Completion <strong>' + formatNumber(call.usage && call.usage.completion_tokens) + '</strong></span><span>Total <strong>' + formatNumber(call.usage && call.usage.total_tokens) + "</strong></span></div>" : '<div class="incomplete-panel"><strong>No prediction was recorded.</strong><p>The request may have been rejected, cancelled, interrupted, or still pending when logging stopped.</p></div>') + "</section>" +
+      (call.response ? '<div class="response-grid">' + detailBlock("Content", output.content, { open: true, showEmpty: true, copyKey: "response-content" }) + detailBlock("Reasoning", output.reasoning_content, { open: !!output.reasoning_content, copyKey: "response-reasoning" }) + (Array.isArray(output.tool_calls) && output.tool_calls.length ? '<details class="payload" open><summary><span>Tool calls</span><span class="payload-info">' + output.tool_calls.length + ' invocation' + (output.tool_calls.length === 1 ? "" : "s") + '</span></summary>' + renderInvocationBlock(output.tool_calls, recordsForTarget(call.id, "response", null), "response:" + call.id, toolCopies) + "</details>" : "") + '</div>' + streamNote + '<div class="usage-row"><span>Prompt <strong>' + formatNumber(call.usage && call.usage.prompt_tokens) + '</strong></span><span>Completion <strong>' + formatNumber(call.usage && call.usage.completion_tokens) + '</strong></span><span>Total <strong>' + formatNumber(call.usage && call.usage.total_tokens) + "</strong></span></div>" : '<div class="incomplete-panel"><strong>No prediction was recorded.</strong><p>The request may have been rejected, cancelled, interrupted, or still pending when logging stopped.</p></div>') + "</section>" +
       '<section class="section"><div class="section-title"><div><span>03</span><h3>Evidence</h3></div><small>Original log data</small></div>' + detailBlock("Request JSON", call.request, { copyKey: "request-json" }) + detailBlock("Response JSON", call.response, { copyKey: "response-json" }) + streamPacketsBlock + detailBlock("Linked raw context · lines " + call.rawContext.from + "–" + call.rawContext.to, call.rawContext.text, { copyKey: "raw-context" }) + "</section>";
 
     els.detail.querySelectorAll("[data-copy-message]").forEach(button => button.addEventListener("click", event => { event.preventDefault(); copyText(contentText(call.messages[Number(button.dataset.copyMessage)].content)); }));
-    const copyMap = { "response-content": output.content, "response-reasoning": output.reasoning_content, "response-tools": output.tool_calls, "request-json": call.request, "response-json": call.response, "stream-packets": call.streamPackets, "raw-context": call.rawContext.text };
+    const copyMap = { "response-content": output.content, "response-reasoning": output.reasoning_content, "request-json": call.request, "response-json": call.response, "stream-packets": call.streamPackets, "raw-context": call.rawContext.text };
     els.detail.querySelectorAll("[data-copy]").forEach(button => button.addEventListener("click", event => { event.preventDefault(); copyText(contentText(copyMap[button.dataset.copy])); }));
+    els.detail.querySelectorAll("[data-copy-tool]").forEach(button => button.addEventListener("click", event => { event.preventDefault(); copyText(contentText(toolCopies.get(button.dataset.copyTool))); }));
   }
 
   function render() {
