@@ -317,23 +317,32 @@
     return '<details class="message-card ' + roleTone + (isAdded && call.predecessorId ? " added" : "") + '"' + (message.index === call.messages.length - 1 ? " open" : "") + '><summary><span class="role-badge">' + escapeHtml(message.role) + '</span><span class="message-preview">' + escapeHtml(preview.slice(0, 150) || "(empty content)") + '</span><span class="message-size">' + formatNumber(text.length) + ' chars</span></summary><div class="message-body"><button class="copy-button" data-copy-message="' + message.index + '" type="button">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre>" + reasoningBlock + toolCallsBlock + "</div></details>";
   }
 
-  function handleStaleExplorerTarget(record) {
+  function handleStaleExplorerTarget(record, direction) {
+    const previousView = getExplorerView();
+    const fallback = window.LMStudioToolExplorer.getStaleTargetFallback(previousView.matching, record.id, direction);
     state.explorer.records = invocationRecords().filter(item => item.id !== record.id);
-    const explorerView = getExplorerView();
-    const fallback = explorerView.matching[explorerView.position] || null;
     toast("That tool invocation is no longer available");
-    if (fallback && fallback.id !== record.id) return jumpToInvocation(fallback);
+    if (fallback) {
+      state.explorer.selectedType = fallback.name;
+      state.explorer.selectedRecordId = fallback.id;
+      return jumpToInvocation(fallback, direction);
+    }
+    const explorerView = getExplorerView();
+    const typeFallback = explorerView.selectedType !== record.name
+      ? explorerView.matching[explorerView.position] || null
+      : null;
+    if (typeFallback) return jumpToInvocation(typeFallback, direction);
     renderDetail();
   }
 
-  function jumpToInvocation(record) {
+  function jumpToInvocation(record, direction) {
     if (!record) return;
     state.selectedId = record.target.callId;
     renderList();
     renderDetail();
     requestAnimationFrame(() => {
       const target = document.getElementById(record.target.domId);
-      if (!target) return handleStaleExplorerTarget(record);
+      if (!window.LMStudioToolExplorer.isInvocationTargetForRecord(target, record)) return handleStaleExplorerTarget(record, direction);
       const details = target.closest("details");
       if (details) details.open = true;
       const reducedMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -349,17 +358,19 @@
     if (toggle) toggle.addEventListener("click", () => {
       state.explorer.open = !state.explorer.open;
       renderDetail();
+      window.LMStudioToolExplorerView.restoreExplorerControlFocus(els.detail, { kind: "toggle" });
     });
     els.detail.querySelectorAll("[data-explorer-scope]").forEach(button => button.addEventListener("click", () => {
       state.explorer.scope = button.dataset.explorerScope;
       renderDetail();
+      window.LMStudioToolExplorerView.restoreExplorerControlFocus(els.detail, { kind: "scope", value: state.explorer.scope });
     }));
     els.detail.querySelectorAll("[data-explorer-type]").forEach(button => button.addEventListener("click", () => {
       state.explorer.selectedType = button.dataset.explorerType;
       state.explorer.selectedRecordId = null;
       state.explorer.position = 0;
       const explorerView = getExplorerView();
-      jumpToInvocation(explorerView.matching[0]);
+      jumpToInvocation(explorerView.matching[0], 1);
     }));
     const previous = els.detail.querySelector("[data-explorer-previous]");
     if (previous) previous.addEventListener("click", () => {
@@ -368,7 +379,7 @@
       const position = explorerView.position - 1;
       state.explorer.position = position;
       state.explorer.selectedRecordId = explorerView.matching[position].id;
-      jumpToInvocation(explorerView.matching[position]);
+      jumpToInvocation(explorerView.matching[position], -1);
     });
     const next = els.detail.querySelector("[data-explorer-next]");
     if (next) next.addEventListener("click", () => {
@@ -377,7 +388,7 @@
       const position = explorerView.position + 1;
       state.explorer.position = position;
       state.explorer.selectedRecordId = explorerView.matching[position].id;
-      jumpToInvocation(explorerView.matching[position]);
+      jumpToInvocation(explorerView.matching[position], 1);
     });
   }
 

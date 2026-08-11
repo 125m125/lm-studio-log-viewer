@@ -104,7 +104,7 @@ test("fallback identity joins a response to its later request copy", () => {
   const invocation = tool(null, "search", '{"q":"logs"}');
   const fixture = resultWith([
     { id: "call-1", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [invocation] } },
-    { id: "call-2", timestamp: 20, messages: [
+    { id: "call-2", predecessorId: "call-1", timestamp: 20, messages: [
       { index: 0, role: "user" },
       { index: 1, role: "assistant", toolCalls: [invocation] },
     ], outputMessage: null },
@@ -113,6 +113,27 @@ test("fallback identity joins a response to its later request copy", () => {
   const records = explorer.buildInvocationIndex(fixture);
   assert.equal(records.length, 1);
   assert.equal(records[0].target.source, "response");
+});
+
+test("fallback identity distinguishes identical generated retries and joins their descendant request copies", () => {
+  const invocation = () => tool(null, "search", "{}");
+  const fixture = resultWith([
+    { id: "call-1", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [invocation()] } },
+    { id: "copy-1", predecessorId: "call-1", timestamp: 15, messages: [
+      { index: 0, role: "user" },
+      { index: 1, role: "assistant", toolCalls: [invocation()] },
+    ], outputMessage: null },
+    { id: "call-2", predecessorId: "call-1", timestamp: 20, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [invocation()] } },
+    { id: "copy-2", predecessorId: "call-2", timestamp: 25, messages: [
+      { index: 0, role: "user" },
+      { index: 1, role: "assistant", toolCalls: [invocation()] },
+    ], outputMessage: null },
+  ]);
+
+  const records = explorer.buildInvocationIndex(fixture);
+  assert.equal(records.length, 2);
+  assert.deepEqual(records.map(record => record.target.callId), ["call-1", "call-2"]);
+  assert.notEqual(records[0].identity, records[1].identity);
 });
 
 test("fallback identity keeps identical calls at different message positions", () => {
@@ -131,14 +152,14 @@ test("fallback identity keeps identical calls at different message positions", (
 test("fallback identity stabilizes structured keys but preserves invalid text", () => {
   const equivalentJson = resultWith([
     { id: "call-1", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [tool(null, "search", '{"b":2,"a":1}')] } },
-    { id: "call-2", timestamp: 20, messages: [
+    { id: "call-2", predecessorId: "call-1", timestamp: 20, messages: [
       { index: 0, role: "user" },
       { index: 1, role: "assistant", toolCalls: [tool(null, "search", '{"a":1,"b":2}')] },
     ], outputMessage: null },
   ]);
   const differentInvalidText = resultWith([
     { id: "call-3", timestamp: 30, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [tool(null, "search", "invalid one")] } },
-    { id: "call-4", timestamp: 40, messages: [
+    { id: "call-4", predecessorId: "call-3", timestamp: 40, messages: [
       { index: 0, role: "user" },
       { index: 1, role: "assistant", toolCalls: [tool(null, "search", "invalid two")] },
     ], outputMessage: null },
@@ -146,6 +167,41 @@ test("fallback identity stabilizes structured keys but preserves invalid text", 
 
   assert.equal(explorer.buildInvocationIndex(equivalentJson).length, 1);
   assert.equal(explorer.buildInvocationIndex(differentInvalidText).length, 2);
+});
+
+test("DOM targets stay unique for record IDs that collide under the previous 32-bit hash", () => {
+  const fixture = resultWith([{
+    id: "call-1",
+    timestamp: 10,
+    messages: [{
+      index: 0,
+      role: "assistant",
+      toolCalls: [
+        tool("tool-eeoj52-84e", "search", "{}"),
+        tool("tool-sw1dll-leo", "search", "{}"),
+      ],
+    }],
+  }]);
+
+  const records = explorer.buildInvocationIndex(fixture);
+  assert.equal(records.length, 2);
+  assert.notEqual(records[0].target.domId, records[1].target.domId);
+  records.forEach(record => assert.match(record.target.domId, /^tool-invocation-[A-Za-z0-9_-]+$/));
+});
+
+test("accepts a located invocation target only when its record identity matches", () => {
+  const record = { id: "record-a" };
+
+  assert.equal(explorer.isInvocationTargetForRecord({ dataset: { toolRecordId: "record-a" } }, record), true);
+  assert.equal(explorer.isInvocationTargetForRecord({ dataset: { toolRecordId: "record-b" } }, record), false);
+  assert.equal(explorer.isInvocationTargetForRecord(null, record), false);
+});
+
+test("stale Previous navigation continues backward past the missing occurrence", () => {
+  const matching = records("search", ["a", "stale-b", "c"]);
+
+  assert.equal(explorer.getStaleTargetFallback(matching, "stale-b", -1).id, "a");
+  assert.equal(explorer.getStaleTargetFallback(matching, "stale-b", 1).id, "c");
 });
 
 test("conversation scope follows the selected call's thread", () => {
@@ -195,6 +251,27 @@ test("reconciles retained types and stale records to bounded navigation position
   assert.equal(nearest.selectedRecordId, recordsForSearch[1].id);
   assert.equal(first.position === 0, true);
   assert.equal(last.position === last.matching.length - 1, true);
+});
+
+test("reconciles an ID-stable invocation to its evolved tool name", () => {
+  const updated = [
+    ...records("alpha", ["other"]),
+    ...records("search", ["earlier", "stable"]),
+  ];
+
+  const selection = explorer.reconcileSelection(updated, "Unknown tool", "stable", 0);
+  assert.equal(selection.selectedType, "search");
+  assert.equal(selection.selectedRecordId, "stable");
+  assert.equal(selection.position, 1);
+});
+
+test("resets position when a vanished type falls back to a different type", () => {
+  const updated = records("search", ["first", "second"]);
+
+  const selection = explorer.reconcileSelection(updated, "write", "gone", 1);
+  assert.equal(selection.selectedType, "search");
+  assert.equal(selection.selectedRecordId, "first");
+  assert.equal(selection.position, 0);
 });
 
 test("updates records while preserving tray state and reconciling a stale occurrence", () => {

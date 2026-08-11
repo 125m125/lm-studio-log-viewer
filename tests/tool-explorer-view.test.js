@@ -25,6 +25,30 @@ test("labels each invocation copy control with its tool name", () => {
   assert.match(html, /aria-label="Copy search tool invocation"/);
 });
 
+test("names each focusable invocation jump target with its tool", () => {
+  const html = view.renderToolInvocations(
+    [{ function: { name: "search", arguments: "{}" } }],
+    [{ id: "record-1", target: { domId: "tool-invocation-abc", toolIndex: 0 } }],
+    "response",
+  );
+
+  assert.match(html, /<article[^>]*aria-label="search tool invocation"/);
+});
+
+test("omits empty identity attributes from nonpreferred source copies", () => {
+  const html = view.renderToolInvocations(
+    [
+      { function: { name: "search", arguments: "{}" } },
+      { function: { name: "write", arguments: "{}" } },
+    ],
+    [],
+    "request",
+  );
+
+  assert.doesNotMatch(html, /\sid=""/);
+  assert.doesNotMatch(html, /data-tool-record-id=""/);
+});
+
 test("renders accessible scope type and bounded navigation controls", () => {
   const html = view.renderExplorerTray({
     open: true,
@@ -43,6 +67,24 @@ test("renders accessible scope type and bounded navigation controls", () => {
   assert.match(html, /1 of 2/);
 });
 
+test("relates the tray toggle to a named panel and groups scope and type controls", () => {
+  const html = view.renderExplorerTray({
+    open: true,
+    scope: "conversation",
+    types: [{ name: "search", count: 1 }],
+    selectedType: "search",
+    position: 0,
+    total: 1,
+    preview: { name: "search", arguments: "{}", time: "12:00", model: "m", callId: "call-1" },
+  });
+
+  assert.match(html, /<section class="explorer-tray" aria-labelledby="explorer-toggle">/);
+  assert.match(html, /id="explorer-toggle"[^>]*aria-controls="explorer-panel"/);
+  assert.match(html, /id="explorer-panel"[^>]*role="region"[^>]*aria-labelledby="explorer-module-title"/);
+  assert.match(html, /class="explorer-scopes" role="group" aria-label="Tool call scope"/);
+  assert.match(html, /class="explorer-types" role="group" aria-label="Tool types"/);
+});
+
 test("renders an empty collapsed tray without phantom navigation", () => {
   const html = view.renderExplorerTray({
     open: false,
@@ -57,4 +99,19 @@ test("renders an empty collapsed tray without phantom navigation", () => {
   assert.match(html, /class="explorer-panel" hidden/);
   assert.match(html, /No tool invocations found in this scope\./);
   assert.doesNotMatch(html, /1 of 0/);
+});
+
+test("restores focus to the corresponding tray control after rerender", () => {
+  const focused = [];
+  const toggle = { focus: () => focused.push("toggle") };
+  const conversation = { dataset: { explorerScope: "conversation" }, focus: () => focused.push("conversation") };
+  const history = { dataset: { explorerScope: "history" }, focus: () => focused.push("history") };
+  const root = {
+    querySelector: selector => selector === "[data-explorer-toggle]" ? toggle : null,
+    querySelectorAll: selector => selector === "[data-explorer-scope]" ? [conversation, history] : [],
+  };
+
+  assert.equal(view.restoreExplorerControlFocus(root, { kind: "toggle" }), true);
+  assert.equal(view.restoreExplorerControlFocus(root, { kind: "scope", value: "history" }), true);
+  assert.deepEqual(focused, ["toggle", "history"]);
 });
