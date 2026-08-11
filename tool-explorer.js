@@ -104,5 +104,33 @@
       });
   }
 
-  return { buildInvocationIndex, getThreadIdForCall };
+  function getScopedInvocations(records, result, selectedCallId, scope) {
+    if (scope === "history") return records.slice();
+    const threadId = getThreadIdForCall(result, selectedCallId);
+    return threadId ? records.filter(record => record.threadId === threadId) : [];
+  }
+
+  function summarizeToolTypes(records) {
+    const counts = new Map();
+    records.forEach(record => counts.set(record.name, (counts.get(record.name) || 0) + 1));
+    return [...counts].map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }
+
+  /**
+   * @param {InvocationRecord[]} records
+   * @param {string | null} selectedType
+   * @param {string | null} selectedRecordId
+   * @param {number} [previousPosition]
+   */
+  function reconcileSelection(records, selectedType, selectedRecordId, previousPosition) {
+    const types = summarizeToolTypes(records);
+    const type = types.some(item => item.name === selectedType) ? selectedType : (types[0] && types[0].name) || null;
+    const matching = type ? records.filter(record => record.name === type) : [];
+    let position = matching.findIndex(record => record.id === selectedRecordId);
+    if (position < 0) position = Math.min(Math.max(previousPosition || 0, 0), Math.max(matching.length - 1, 0));
+    return { selectedType: type, selectedRecordId: matching[position] ? matching[position].id : null, position, matching };
+  }
+
+  return { buildInvocationIndex, getThreadIdForCall, getScopedInvocations, summarizeToolTypes, reconcileSelection };
 });
