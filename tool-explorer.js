@@ -52,7 +52,7 @@
   }
 
   function isInvocationTargetForRecord(target, record) {
-    return Boolean(target && record && target.dataset && target.dataset.toolRecordId === record.id);
+    return Boolean(target && record && target.dataset && target.dataset.toolRecordId === record.target.domId);
   }
 
   function getStaleTargetFallback(matching, staleRecordId, direction) {

@@ -34,7 +34,7 @@
       const name = fn.name || "Unknown tool";
       const args = fn.arguments == null ? "" : contentText(fn.arguments);
       const targetAttributes = record
-        ? ' id="' + escapeHtml(record.target.domId) + '" tabindex="-1" data-tool-record-id="' + escapeHtml(record.id) + '"'
+        ? ' id="' + escapeHtml(record.target.domId) + '" tabindex="-1" data-tool-record-id="' + escapeHtml(record.target.domId) + '"'
         : "";
       return '<article class="tool-invocation"' + targetAttributes + ' aria-label="' + escapeHtml(name + " tool invocation") + '">' +
         '<div class="tool-invocation-head"><strong>' + escapeHtml(name) + '</strong>' +

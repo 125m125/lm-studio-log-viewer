@@ -190,10 +190,10 @@ test("DOM targets stay unique for record IDs that collide under the previous 32-
 });
 
 test("accepts a located invocation target only when its record identity matches", () => {
-  const record = { id: "record-a" };
+  const record = { id: "record-a", target: { domId: "tool-invocation-a" } };
 
-  assert.equal(explorer.isInvocationTargetForRecord({ dataset: { toolRecordId: "record-a" } }, record), true);
-  assert.equal(explorer.isInvocationTargetForRecord({ dataset: { toolRecordId: "record-b" } }, record), false);
+  assert.equal(explorer.isInvocationTargetForRecord({ dataset: { toolRecordId: "tool-invocation-a" } }, record), true);
+  assert.equal(explorer.isInvocationTargetForRecord({ dataset: { toolRecordId: "tool-invocation-b" } }, record), false);
   assert.equal(explorer.isInvocationTargetForRecord(null, record), false);
 });
 

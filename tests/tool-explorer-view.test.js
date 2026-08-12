@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const explorer = require("../tool-explorer.js");
 const view = require("../tool-explorer-view.js");
 
 test("renders an addressable and focusable invocation with safe content", () => {
@@ -10,10 +11,34 @@ test("renders an addressable and focusable invocation with safe content", () => 
   );
   assert.match(html, /id="tool-invocation-abc"/);
   assert.match(html, /tabindex="-1"/);
-  assert.match(html, /data-tool-record-id="record-1"/);
+  assert.match(html, /data-tool-record-id="tool-invocation-abc"/);
   assert.match(html, /data-copy-tool="response:0"/);
   assert.match(html, /&lt;search&gt;/);
   assert.doesNotMatch(html, /<search>/);
+});
+
+test("renders a DOM-safe identity that validates a no-ID fallback invocation target", () => {
+  const toolCall = { type: "function", function: { name: "read_file", arguments: '{"path":"request.log"}' } };
+  const call = {
+    id: "call-1",
+    timestamp: 10,
+    messages: [{ index: 0, role: "user" }],
+    outputMessage: { tool_calls: [toolCall] },
+  };
+  const record = explorer.buildInvocationIndex({
+    calls: [call],
+    threads: [{ id: "thread-root", calls: [call] }],
+  })[0];
+
+  const html = view.renderToolInvocations([toolCall], [record], "response");
+  const renderedIdentity = html.match(/data-tool-record-id="([^"]+)"/)[1];
+
+  assert.equal(renderedIdentity, record.target.domId);
+  assert.equal(renderedIdentity.includes("\u0000"), false);
+  assert.equal(
+    explorer.isInvocationTargetForRecord({ dataset: { toolRecordId: renderedIdentity } }, record),
+    true,
+  );
 });
 
 test("labels each invocation copy control with its tool name", () => {
