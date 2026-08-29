@@ -26,21 +26,28 @@
     return true;
   }
 
-  function renderToolInvocations(toolCalls, records, copyPrefix) {
+  function renderToolInvocations(toolCalls, records, copyPrefix, options) {
     if (!Array.isArray(toolCalls) || !toolCalls.length) return "";
-    return '<div class="tool-invocations">' + toolCalls.map((toolCall, index) => {
-      const record = records.find(item => item.target.toolIndex === index);
+    options = options || {};
+    const entries = toolCalls.map((toolCall, index) => {
+      const toolCallId = toolCall && toolCall.id != null ? String(toolCall.id) : null;
+      const record = (toolCallId && records.find(item => item.toolCallId === toolCallId)) || records.find(item => item.target.toolIndex === index);
+      if (options.onlyAddressable && !record) return "";
       const fn = toolCall && toolCall.function || {};
       const name = fn.name || "Unknown tool";
       const args = fn.arguments == null ? "" : contentText(fn.arguments);
       const targetAttributes = record
         ? ' id="' + escapeHtml(record.target.domId) + '" tabindex="-1" data-tool-record-id="' + escapeHtml(record.target.domId) + '"'
         : "";
+      const result = record && record.result != null
+        ? '<div class="tool-invocation-result"><span>Result</span><pre>' + escapeHtml(contentText(record.result) || "(empty result)") + '</pre></div>'
+        : "";
       return '<article class="tool-invocation"' + targetAttributes + ' aria-label="' + escapeHtml(name + " tool invocation") + '">' +
         '<div class="tool-invocation-head"><strong>' + escapeHtml(name) + '</strong>' +
         '<button type="button" data-copy-tool="' + escapeHtml(copyPrefix + ":" + index) + '" aria-label="Copy ' + escapeHtml(name) + ' tool invocation">Copy</button></div>' +
-        '<pre>' + escapeHtml(args || "(empty arguments)") + '</pre></article>';
-    }).join("") + "</div>";
+        '<div class="tool-invocation-request"><span>Request</span><pre>' + escapeHtml(args || "(empty arguments)") + '</pre></div>' + result + '</article>';
+    }).filter(Boolean).join("");
+    return entries ? '<div class="tool-invocations">' + entries + "</div>" : "";
   }
 
   function renderExplorerTray(viewModel) {
@@ -54,7 +61,10 @@
           '<span>' + escapeHtml(viewModel.position + 1) + ' of ' + escapeHtml(viewModel.total) + '</span>' +
           '<button type="button" data-explorer-next' + (atEnd ? " disabled" : "") + '>Next</button>' +
         '</div>' +
-        '<div class="explorer-preview"><strong>' + escapeHtml(preview.name) + '</strong><pre>' + escapeHtml(preview.arguments) + '</pre>' +
+        '<div class="explorer-preview"><strong>' + escapeHtml(preview.name) + '</strong><div class="explorer-preview-content">' +
+          '<div><span>Request</span><pre>' + escapeHtml(preview.arguments) + '</pre></div>' +
+          '<div><span>Result</span><pre>' + escapeHtml(preview.result == null ? "(no tool result recorded)" : contentText(preview.result)) + '</pre></div>' +
+        '</div>' +
           '<div><span>' + escapeHtml(preview.time) + '</span><span>' + escapeHtml(preview.model) + '</span><span>' + escapeHtml(preview.callId) + '</span></div>' +
         '</div>'
       : '<p class="explorer-empty">No tool invocations found in this scope.</p>';

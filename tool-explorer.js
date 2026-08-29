@@ -11,13 +11,37 @@
     return "{" + Object.keys(value).sort().map(key => JSON.stringify(key) + ":" + stableStringify(value[key])).join(",") + "}";
   }
 
+  function normalizeArgumentIdentity(value) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed !== value) {
+        try {
+          const scalar = JSON.parse(trimmed);
+          if (scalar === null || typeof scalar === "number" || typeof scalar === "boolean") return scalar;
+        } catch (_) { /* keep ordinary text */ }
+      }
+      if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+        try { return normalizeArgumentIdentity(JSON.parse(trimmed)); } catch (_) { /* keep ordinary text */ }
+      }
+      return trimmed;
+    }
+    if (Array.isArray(value)) return value.map(normalizeArgumentIdentity);
+    if (value && typeof value === "object") {
+      return Object.keys(value).reduce((normalized, key) => {
+        normalized[key] = normalizeArgumentIdentity(value[key]);
+        return normalized;
+      }, {});
+    }
+    return value;
+  }
+
   function normalizeArguments(raw) {
     const text = typeof raw === "string" ? raw : stableStringify(raw);
     try {
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-      return { text: stableStringify(parsed), parsed };
+      return { text: stableStringify(parsed), identityText: stableStringify(normalizeArgumentIdentity(parsed)), parsed };
     } catch (_) {
-      return { text, parsed: null };
+      return { text, identityText: text, parsed: null };
     }
   }
 
@@ -75,12 +99,19 @@
         (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0) ||
         (a.lineStart ?? 0) - (b.lineStart ?? 0));
       const callsById = new Map(thread.calls.map(call => [call.id, call]));
+      const resultsByToolCallId = new Map();
+      calls.forEach(call => (call.messages || []).forEach(message => {
+        const toolCallId = message.toolCallId ?? message.tool_call_id;
+        if (message.role === "tool" && toolCallId != null && !resultsByToolCallId.has(String(toolCallId))) {
+          resultsByToolCallId.set(String(toolCallId), message.content);
+        }
+      }));
 
       function fallbackSignature(toolCall, logicalMessageIndex, toolIndex) {
         const fn = toolCall && toolCall.function || {};
         const name = fn.name || "Unknown tool";
         const normalized = normalizeArguments(fn.arguments == null ? "" : fn.arguments);
-        return [logicalMessageIndex, toolIndex, name, normalized.text].join("\u0000");
+        return [logicalMessageIndex, toolIndex, name, normalized.identityText].join("\u0000");
       }
 
       function generatedFallbackIdentity(call, signature) {
@@ -98,7 +129,12 @@
           if (Array.isArray(responseCalls)) {
             const responseIndex = responseCalls.findIndex((toolCall, toolIndex) =>
               fallbackSignature(toolCall, (predecessor.messages || []).length, toolIndex) === signature);
-            if (responseIndex >= 0) return generatedFallbackIdentity(predecessor, signature);
+            if (responseIndex >= 0) {
+              const responseTool = responseCalls[responseIndex];
+              return responseTool && responseTool.id
+                ? "id:" + responseTool.id
+                : generatedFallbackIdentity(predecessor, signature);
+            }
           }
           predecessorId = predecessor.predecessorId;
         }
@@ -109,12 +145,13 @@
         const fn = toolCall && toolCall.function || {};
         const name = fn.name || "Unknown tool";
         const normalized = normalizeArguments(fn.arguments == null ? "" : fn.arguments);
-        const signature = [logicalMessageIndex, toolIndex, name, normalized.text].join("\u0000");
-        const identity = toolCall && toolCall.id
+        const signature = [logicalMessageIndex, toolIndex, name, normalized.identityText].join("\u0000");
+        const ancestorIdentity = source === "request" ? ancestorFallbackIdentity(call, signature) : null;
+        const identity = ancestorIdentity || (toolCall && toolCall.id
           ? "id:" + toolCall.id
           : source === "response"
             ? generatedFallbackIdentity(call, signature)
-            : ancestorFallbackIdentity(call, signature) || "fallback-request:" + signature;
+            : "fallback-request:" + signature);
         const id = thread.id + ":" + identity;
         const candidate = {
           id,
@@ -123,6 +160,10 @@
           name,
           arguments: normalized.text,
           parsedArguments: normalized.parsed,
+          toolCallId: toolCall && toolCall.id != null ? String(toolCall.id) : null,
+          result: toolCall && toolCall.id != null && resultsByToolCallId.has(String(toolCall.id))
+            ? resultsByToolCallId.get(String(toolCall.id))
+            : null,
           logicalMessageIndex,
           toolIndex,
           timestamp: call.timestamp,
@@ -139,6 +180,10 @@
         };
         const current = preferred.get(id);
         if (!current || (current.target.source === "request" && source === "response")) preferred.set(id, candidate);
+        else {
+          current.toolCallId = current.toolCallId || candidate.toolCallId;
+          if (current.result == null && candidate.result != null) current.result = candidate.result;
+        }
       }
 
       for (const call of calls) {

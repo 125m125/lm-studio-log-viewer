@@ -115,6 +115,22 @@ test("fallback identity joins a response to its later request copy", () => {
   assert.equal(records[0].target.source, "response");
 });
 
+test("pairs a tool invocation with its result from the conversation history", () => {
+  const invocation = tool("tool-1", "search", '{"q":"logs"}');
+  const fixture = resultWith([
+    { id: "call-1", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [invocation] } },
+    { id: "call-2", predecessorId: "call-1", timestamp: 20, messages: [
+      { index: 0, role: "user" },
+      { index: 1, role: "assistant", toolCalls: [invocation] },
+      { index: 2, role: "tool", toolCallId: "tool-1", content: "search result" },
+    ], outputMessage: null },
+  ]);
+
+  const record = explorer.buildInvocationIndex(fixture)[0];
+
+  assert.equal(record.result, "search result");
+});
+
 test("fallback identity distinguishes identical generated retries and joins their descendant request copies", () => {
   const invocation = () => tool(null, "search", "{}");
   const fixture = resultWith([
@@ -167,6 +183,94 @@ test("fallback identity stabilizes structured keys but preserves invalid text", 
 
   assert.equal(explorer.buildInvocationIndex(equivalentJson).length, 1);
   assert.equal(explorer.buildInvocationIndex(differentInvalidText).length, 2);
+});
+
+test("fallback identity ignores boundary whitespace in structured argument strings", () => {
+  const responseArguments = JSON.stringify({ claim: "\nclaim text\n", severity: "\nmajor\n" });
+  const requestArguments = JSON.stringify({ claim: "claim text", severity: "major" });
+  const responseTool = tool(null, "report_candidate", responseArguments);
+  const requestTool = tool(null, "report_candidate", requestArguments);
+  const fixture = resultWith([
+    { id: "call-1", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [responseTool] } },
+    { id: "call-2", predecessorId: "call-1", timestamp: 20, messages: [
+      { index: 0, role: "user" },
+      { index: 1, role: "assistant", toolCalls: [requestTool] },
+    ], outputMessage: null },
+  ]);
+
+  const records = explorer.buildInvocationIndex(fixture);
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].arguments, responseArguments);
+});
+
+test("fallback identity joins an unassigned response to a reidentified request copy", () => {
+  const responseArguments = JSON.stringify({ claim: "\nclaim text\n", severity: "\nmajor\n" });
+  const requestArguments = JSON.stringify({ claim: "claim text", severity: "major" });
+  const responseTool = tool(null, "report_candidate", responseArguments);
+  const requestTool = tool("new-request-id", "report_candidate", requestArguments);
+  const fixture = resultWith([
+    { id: "call-1", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [responseTool] } },
+    { id: "call-2", predecessorId: "call-1", timestamp: 20, messages: [
+      { index: 0, role: "user" },
+      { index: 1, role: "assistant", toolCalls: [requestTool] },
+      { index: 2, role: "tool", toolCallId: "new-request-id", content: "candidate result" },
+    ], outputMessage: null },
+  ]);
+
+  const records = explorer.buildInvocationIndex(fixture);
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].target.callId, "call-1");
+  assert.equal(records[0].result, "candidate result");
+});
+
+test("fallback identity joins equivalent JSON-string and structured argument values", () => {
+  const responseArguments = JSON.stringify({
+    claim: "\nclaim text\n",
+    supporting_evidence_ids: "\n[\"evidence:a\"]\n",
+    contradicting_evidence_ids: "\n[]\n",
+    related_targets: "\n[\"O1\"]\n",
+  });
+  const requestArguments = JSON.stringify({
+    claim: "claim text",
+    supporting_evidence_ids: ["evidence:a"],
+    contradicting_evidence_ids: [],
+    related_targets: ["O1"],
+  });
+  const responseTool = tool(null, "report_candidate", responseArguments);
+  const requestTool = tool("new-request-id", "report_candidate", requestArguments);
+  const fixture = resultWith([
+    { id: "call-1", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [responseTool] } },
+    { id: "call-2", predecessorId: "call-1", timestamp: 20, messages: [
+      { index: 0, role: "user" },
+      { index: 1, role: "assistant", toolCalls: [requestTool] },
+    ], outputMessage: null },
+  ]);
+
+  assert.equal(explorer.buildInvocationIndex(fixture).length, 1);
+});
+
+test("fallback identity joins newline-wrapped scalar arguments to native values", () => {
+  const responseTool = tool(null, "read_file", JSON.stringify({
+    path: "\naction.yml\n",
+    offset: "\n800\n",
+    limit: "\n80\n",
+  }));
+  const requestTool = tool("new-request-id", "read_file", JSON.stringify({
+    path: "action.yml",
+    offset: 800,
+    limit: 80,
+  }));
+  const fixture = resultWith([
+    { id: "call-1", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [responseTool] } },
+    { id: "call-2", predecessorId: "call-1", timestamp: 20, messages: [
+      { index: 0, role: "user" },
+      { index: 1, role: "assistant", toolCalls: [requestTool] },
+    ], outputMessage: null },
+  ]);
+
+  assert.equal(explorer.buildInvocationIndex(fixture).length, 1);
 });
 
 test("DOM targets stay unique for record IDs that collide under the previous 32-bit hash", () => {

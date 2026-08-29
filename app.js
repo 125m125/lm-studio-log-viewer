@@ -78,6 +78,7 @@
       preview: record ? {
         name: record.name,
         arguments: record.parsedArguments == null ? record.arguments : JSON.stringify(record.parsedArguments, null, 2),
+        result: record.result,
         time: formatTime(record),
         model: record.model || "Unknown model",
         callId: record.target.callId,
@@ -295,10 +296,21 @@
     return '<details class="payload"' + (options.open ? " open" : "") + '><summary><span>' + escapeHtml(label) + '</span><span class="payload-info">' + formatNumber(text.length) + ' chars</span></summary><div class="payload-body"><button class="copy-button" type="button" data-copy="' + escapeHtml(options.copyKey || label) + '" aria-label="Copy ' + escapeHtml(label) + '">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre></div></details>";
   }
 
-  function renderInvocationBlock(toolCalls, records, copyPrefix, toolCopies) {
+  function renderInvocationBlock(toolCalls, records, copyPrefix, toolCopies, options) {
     if (!Array.isArray(toolCalls) || !toolCalls.length) return "";
-    toolCalls.forEach((toolCall, index) => toolCopies.set(copyPrefix + ":" + index, toolCall));
-    return window.LMStudioToolExplorerView.renderToolInvocations(toolCalls, records, copyPrefix);
+    options = options || {};
+    const html = window.LMStudioToolExplorerView.renderToolInvocations(toolCalls, records, copyPrefix, options);
+    if (html) toolCalls.forEach((toolCall, index) => {
+      if (!options.onlyAddressable || records.some(record => record.target.toolIndex === index)) toolCopies.set(copyPrefix + ":" + index, toolCall);
+    });
+    return html;
+  }
+
+  function isIndexedToolResult(message, call) {
+    const toolCallId = message && (message.toolCallId ?? message.tool_call_id);
+    if (!message || message.role !== "tool" || toolCallId == null || !state.result) return false;
+    const threadId = window.LMStudioToolExplorer.getThreadIdForCall(state.result, call.id);
+    return invocationRecords().some(record => record.threadId === threadId && record.toolCallId === String(toolCallId));
   }
 
   function renderMessage(message, call, toolCopies) {
@@ -311,9 +323,10 @@
     const reasoningBlock = reasoning
       ? '<div class="subpayload"><span>Reasoning</span><pre>' + escapeHtml(reasoning) + "</pre></div>"
       : "";
-    const toolCallsBlock = Array.isArray(message.toolCalls) && message.toolCalls.length
-      ? '<div class="subpayload"><span>Tool calls</span>' + renderInvocationBlock(message.toolCalls, recordsForTarget(call.id, "request", message.index), "request:" + call.id + ":" + message.index, toolCopies) + "</div>"
+    const requestToolCalls = Array.isArray(message.toolCalls) && message.toolCalls.length
+      ? renderInvocationBlock(message.toolCalls, invocationRecords(), "request:" + call.id + ":" + message.index, toolCopies, {})
       : "";
+    const toolCallsBlock = requestToolCalls ? '<div class="subpayload"><span>Tool calls</span>' + requestToolCalls + "</div>" : "";
     return '<details class="message-card ' + roleTone + (isAdded && call.predecessorId ? " added" : "") + '"' + (message.index === call.messages.length - 1 ? " open" : "") + '><summary><span class="role-badge">' + escapeHtml(message.role) + '</span><span class="message-preview">' + escapeHtml(preview.slice(0, 150) || "(empty content)") + '</span><span class="message-size">' + formatNumber(text.length) + ' chars</span></summary><div class="message-body"><button class="copy-button" data-copy-message="' + message.index + '" type="button">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre>" + reasoningBlock + toolCallsBlock + "</div></details>";
   }
 
@@ -339,6 +352,7 @@
     if (!record) return;
     state.selectedId = record.target.callId;
     renderList();
+    scrollSelectedCallIntoView();
     renderDetail();
     requestAnimationFrame(() => {
       const target = document.getElementById(record.target.domId);
@@ -351,6 +365,13 @@
       target.classList.add("tool-jump-highlight");
       setTimeout(() => target.classList.remove("tool-jump-highlight"), 1400);
     });
+  }
+
+  function scrollSelectedCallIntoView() {
+    const selectedCall = Array.from(els.list.querySelectorAll("[data-call-id]")).find(button => button.dataset.callId === state.selectedId);
+    if (!selectedCall || typeof selectedCall.scrollIntoView !== "function") return;
+    const reducedMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    selectedCall.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "nearest" });
   }
 
   function wireExplorerControls() {
@@ -407,13 +428,20 @@
     const responseMeta = call.stream ? ((call.finishReason ? call.finishReason + " · " : "") + call.streamPackets.length + " packets") : (call.finishReason || statusLabel(call.status));
     const streamNote = call.stream && !call.streamComplete ? '<p class="stream-note">Partial stream: logging ended before the terminal packet.</p>' : "";
     const streamPacketsBlock = call.stream ? detailBlock("Stream packets (" + call.streamPackets.length + ")", call.streamPackets, { copyKey: "stream-packets" }) : "";
+    const responseRecords = recordsForTarget(call.id, "response", null);
+    const responseToolCalls = Array.isArray(output.tool_calls) && output.tool_calls.length
+      ? renderInvocationBlock(output.tool_calls, responseRecords, "response:" + call.id, toolCopies, { onlyAddressable: true })
+      : "";
+    const responseToolCallsBlock = responseToolCalls
+      ? '<details class="payload" open><summary><span>Tool calls</span><span class="payload-info">' + responseRecords.length + ' invocation' + (responseRecords.length === 1 ? "" : "s") + '</span></summary>' + responseToolCalls + "</details>"
+      : "";
     const ancestry = call.predecessorId ? '<div class="ancestry"><span>Conversation continuation · ' + escapeHtml(call.threadConfidence) + ' confidence</span><span>' + delta.retained + ' retained</span><span class="plus">+' + delta.added.length + ' added</span><span class="minus">−' + delta.removed.length + ' removed</span></div>' : '<div class="ancestry root"><span>Conversation root</span><span>' + call.messages.length + " initial messages</span></div>";
     els.detail.innerHTML = explorerTray +
       '<header class="detail-head"><div><div class="detail-kicker"><span class="status-pill ' + call.status + '">' + statusLabel(call.status) + '</span><span>' + escapeHtml(call.timestampRaw) + '</span></div><h2>' + escapeHtml(call.model) + '</h2><p>' + escapeHtml(call.endpoint) + ' · ' + escapeHtml(call.sourceName) + ':' + call.lineStart + '</p></div><div class="duration"><span>Round trip</span><strong>' + escapeHtml(formatDuration(call.durationMs)) + "</strong></div></header>" +
       ancestry +
-      '<section class="section"><div class="section-title"><div><span>01</span><h3>Request messages</h3></div><small>' + call.messages.length + ' total</small></div><div class="messages">' + call.messages.map(message => renderMessage(message, call, toolCopies)).join("") + "</div></section>" +
+      '<section class="section"><div class="section-title"><div><span>01</span><h3>Request messages</h3></div><small>' + call.messages.filter(message => !isIndexedToolResult(message, call)).length + ' total</small></div><div class="messages">' + call.messages.filter(message => !isIndexedToolResult(message, call)).map(message => renderMessage(message, call, toolCopies)).join("") + "</div></section>" +
       '<section class="section response-section"><div class="section-title"><div><span>02</span><h3>Response</h3></div><small>' + escapeHtml(responseMeta) + "</small></div>" +
-      (call.response ? '<div class="response-grid">' + detailBlock("Content", output.content, { open: true, showEmpty: true, copyKey: "response-content" }) + detailBlock("Reasoning", output.reasoning_content, { open: !!output.reasoning_content, copyKey: "response-reasoning" }) + (Array.isArray(output.tool_calls) && output.tool_calls.length ? '<details class="payload" open><summary><span>Tool calls</span><span class="payload-info">' + output.tool_calls.length + ' invocation' + (output.tool_calls.length === 1 ? "" : "s") + '</span></summary>' + renderInvocationBlock(output.tool_calls, recordsForTarget(call.id, "response", null), "response:" + call.id, toolCopies) + "</details>" : "") + '</div>' + streamNote + '<div class="usage-row"><span>Prompt <strong>' + formatNumber(call.usage && call.usage.prompt_tokens) + '</strong></span><span>Completion <strong>' + formatNumber(call.usage && call.usage.completion_tokens) + '</strong></span><span>Total <strong>' + formatNumber(call.usage && call.usage.total_tokens) + "</strong></span></div>" : '<div class="incomplete-panel"><strong>No prediction was recorded.</strong><p>The request may have been rejected, cancelled, interrupted, or still pending when logging stopped.</p></div>') + "</section>" +
+      (call.response ? '<div class="response-grid">' + detailBlock("Content", output.content, { open: true, showEmpty: true, copyKey: "response-content" }) + detailBlock("Reasoning", output.reasoning_content, { open: !!output.reasoning_content, copyKey: "response-reasoning" }) + responseToolCallsBlock + '</div>' + streamNote + '<div class="usage-row"><span>Prompt <strong>' + formatNumber(call.usage && call.usage.prompt_tokens) + '</strong></span><span>Completion <strong>' + formatNumber(call.usage && call.usage.completion_tokens) + '</strong></span><span>Total <strong>' + formatNumber(call.usage && call.usage.total_tokens) + "</strong></span></div>" : '<div class="incomplete-panel"><strong>No prediction was recorded.</strong><p>The request may have been rejected, cancelled, interrupted, or still pending when logging stopped.</p></div>') + "</section>" +
       '<section class="section"><div class="section-title"><div><span>03</span><h3>Evidence</h3></div><small>Original log data</small></div>' + detailBlock("Request JSON", call.request, { copyKey: "request-json" }) + detailBlock("Response JSON", call.response, { copyKey: "response-json" }) + streamPacketsBlock + detailBlock("Linked raw context · lines " + call.rawContext.from + "–" + call.rawContext.to, call.rawContext.text, { copyKey: "raw-context" }) + "</section>";
 
     wireExplorerControls();

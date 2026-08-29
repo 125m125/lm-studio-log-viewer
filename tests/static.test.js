@@ -36,6 +36,27 @@ test("detail rendering wires streamed packet evidence from the call fields", () 
   assert.match(app, /const copyMap = \{[^}]*"stream-packets": call\.streamPackets[^}]*\}/s);
 });
 
+test("tool navigation keeps the selected sidebar call in view", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(app, /function scrollSelectedCallIntoView\(\)/);
+  assert.match(app, /selectedCall\.scrollIntoView\(/);
+  assert.match(app, /scrollSelectedCallIntoView\(\);/);
+});
+
+test("paired tool results are consolidated into invocation cards", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(app, /function isIndexedToolResult\(message, call\)/);
+  assert.match(app, /!isIndexedToolResult\(message, call\)/);
+});
+
+test("history keeps non-canonical tool calls while response rendering stays canonical", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const messageRenderer = app.slice(app.indexOf("function renderMessage"), app.indexOf("function jumpToInvocation"));
+  const detailRenderer = app.slice(app.indexOf("function renderDetail"));
+  assert.match(messageRenderer, /renderInvocationBlock\(message\.toolCalls,[\s\S]*toolCopies,\s*\{\s*\}\)/);
+  assert.match(detailRenderer, /renderInvocationBlock\(output\.tool_calls,[\s\S]*toolCopies,\s*\{\s*onlyAddressable:\s*true\s*\}\)/);
+});
+
 test("assistant request messages render passed-back reasoning", () => {
   const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   assert.match(app, /message\.reasoningContent/);

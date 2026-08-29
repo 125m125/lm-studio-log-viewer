@@ -74,6 +74,43 @@ test("omits empty identity attributes from nonpreferred source copies", () => {
   assert.doesNotMatch(html, /data-tool-record-id=""/);
 });
 
+test("can omit non-canonical invocation copies", () => {
+  const html = view.renderToolInvocations(
+    [
+      { function: { name: "canonical", arguments: "{}" } },
+      { function: { name: "duplicate", arguments: "{}" } },
+    ],
+    [{ id: "record-1", target: { domId: "tool-invocation-abc", toolIndex: 0 } }],
+    "request",
+    { onlyAddressable: true },
+  );
+
+  assert.match(html, /canonical/);
+  assert.doesNotMatch(html, /duplicate/);
+});
+
+test("renders a paired result with the canonical invocation", () => {
+  const html = view.renderToolInvocations(
+    [{ function: { name: "search", arguments: "{}" } }],
+    [{ id: "record-1", result: "found logs", target: { domId: "tool-invocation-abc", toolIndex: 0 } }],
+    "response",
+    { onlyAddressable: true },
+  );
+
+  assert.match(html, /Result/);
+  assert.match(html, /found logs/);
+});
+
+test("matches a history copy to its canonical result by tool-call ID", () => {
+  const html = view.renderToolInvocations(
+    [{ id: "tool-1", function: { name: "search", arguments: "{}" } }],
+    [{ id: "record-1", toolCallId: "tool-1", result: "history result", target: { domId: "tool-invocation-abc", toolIndex: 4 } }],
+    "request",
+  );
+
+  assert.match(html, /history result/);
+});
+
 test("renders accessible scope type and bounded navigation controls", () => {
   const html = view.renderExplorerTray({
     open: true,
@@ -90,6 +127,23 @@ test("renders accessible scope type and bounded navigation controls", () => {
   assert.match(html, /data-explorer-previous[^>]*disabled/);
   assert.match(html, /data-explorer-next/);
   assert.match(html, /1 of 2/);
+});
+
+test("renders the selected tool request and result in the explorer preview", () => {
+  const html = view.renderExplorerTray({
+    open: true,
+    scope: "conversation",
+    types: [{ name: "search", count: 1 }],
+    selectedType: "search",
+    position: 0,
+    total: 1,
+    preview: { name: "search", arguments: '{"q":"logs"}', result: "found logs", time: "12:00", model: "m", callId: "call-1" },
+  });
+
+  assert.match(html, /Request/);
+  assert.match(html, /\{&quot;q&quot;:&quot;logs&quot;\}/);
+  assert.match(html, /Result/);
+  assert.match(html, /found logs/);
 });
 
 test("relates the tray toggle to a named panel and groups scope and type controls", () => {
