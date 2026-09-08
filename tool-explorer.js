@@ -99,6 +99,7 @@
         (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0) ||
         (a.lineStart ?? 0) - (b.lineStart ?? 0));
       const callsById = new Map(thread.calls.map(call => [call.id, call]));
+      const identitiesByToolCallId = new Map();
       const resultsByToolCallId = new Map();
       calls.forEach(call => (call.messages || []).forEach(message => {
         const toolCallId = message.toolCallId ?? message.tool_call_id;
@@ -146,13 +147,18 @@
         const name = fn.name || "Unknown tool";
         const normalized = normalizeArguments(fn.arguments == null ? "" : fn.arguments);
         const signature = [logicalMessageIndex, toolIndex, name, normalized.identityText].join("\u0000");
-        const ancestorIdentity = source === "request" ? ancestorFallbackIdentity(call, signature) : null;
+        const toolCallId = toolCall && toolCall.id != null ? String(toolCall.id) : null;
+        // Keep the response association when compacted history moves the request copy.
+        const ancestorIdentity = source === "request"
+          ? identitiesByToolCallId.get(toolCallId) || ancestorFallbackIdentity(call, signature)
+          : null;
         const identity = ancestorIdentity || (toolCall && toolCall.id
           ? "id:" + toolCall.id
           : source === "response"
             ? generatedFallbackIdentity(call, signature)
             : "fallback-request:" + signature);
         const id = thread.id + ":" + identity;
+        if (toolCallId != null) identitiesByToolCallId.set(toolCallId, identity);
         const candidate = {
           id,
           identity,

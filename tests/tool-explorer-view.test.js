@@ -3,6 +3,23 @@ const assert = require("node:assert/strict");
 const explorer = require("../tool-explorer.js");
 const view = require("../tool-explorer-view.js");
 
+test("request targets stay unique across no-ID messages and history copies", () => {
+  const invocation = { function: { name: "search", arguments: "{}" } };
+  const call = { id: "call", messages: [0, 1].map(index => ({ index, role: "assistant", toolCalls: [invocation] })) };
+  const records = explorer.buildInvocationIndex({ threads: [{ id: "thread", calls: [call] }] });
+  const html = call.messages.map(message => view.renderToolInvocations(message.toolCalls, records, "request", {
+    target: { callId: call.id, source: "request", messageIndex: message.index },
+  })).join("");
+  for (const record of records) {
+    assert.equal(html.split(' id="' + record.target.domId + '"').length - 1, 1);
+  }
+  const history = view.renderToolInvocations([invocation], records, "history", {
+    target: { callId: "later-call", source: "request", messageIndex: 0 },
+  });
+  assert.match(history, /search/);
+  assert.doesNotMatch(history, /data-tool-record-id/);
+});
+
 test("renders an addressable and focusable invocation with safe content", () => {
   const html = view.renderToolInvocations(
     [{ function: { name: "<search>", arguments: '{"q":"<logs>"}' } }],

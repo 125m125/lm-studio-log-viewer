@@ -29,9 +29,15 @@
   function renderToolInvocations(toolCalls, records, copyPrefix, options) {
     if (!Array.isArray(toolCalls) || !toolCalls.length) return "";
     options = options || {};
+    const targetRecords = options.target ? records.filter(record =>
+      record.target.callId === options.target.callId &&
+      record.target.source === options.target.source &&
+      record.target.messageIndex === options.target.messageIndex
+    ) : records;
     const entries = toolCalls.map((toolCall, index) => {
       const toolCallId = toolCall && toolCall.id != null ? String(toolCall.id) : null;
-      const record = (toolCallId && records.find(item => item.toolCallId === toolCallId)) || records.find(item => item.target.toolIndex === index);
+      const record = targetRecords.find(item => item.target.toolIndex === index);
+      const resultRecord = record || (toolCallId && records.find(item => item.toolCallId === toolCallId));
       if (options.onlyAddressable && !record) return "";
       const fn = toolCall && toolCall.function || {};
       const name = fn.name || "Unknown tool";
@@ -39,8 +45,8 @@
       const targetAttributes = record
         ? ' id="' + escapeHtml(record.target.domId) + '" tabindex="-1" data-tool-record-id="' + escapeHtml(record.target.domId) + '"'
         : "";
-      const result = record && record.result != null
-        ? '<div class="tool-invocation-result"><span>Result</span><pre>' + escapeHtml(contentText(record.result) || "(empty result)") + '</pre></div>'
+      const result = resultRecord && resultRecord.result != null
+        ? '<div class="tool-invocation-result"><span>Result</span><pre>' + escapeHtml(contentText(resultRecord.result) || "(empty result)") + '</pre></div>'
         : "";
       return '<article class="tool-invocation"' + targetAttributes + ' aria-label="' + escapeHtml(name + " tool invocation") + '">' +
         '<div class="tool-invocation-head"><strong>' + escapeHtml(name) + '</strong>' +

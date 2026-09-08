@@ -115,6 +115,28 @@ test("fallback identity joins a response to its later request copy", () => {
   assert.equal(records[0].target.source, "response");
 });
 
+test("retains assigned tool IDs when compaction shifts request message positions", () => {
+  const generated = tool(null, "read_remote_file", '{"path":"\u005cnfile.txt\u005cn"}');
+  const echoed = tool("assigned-id", "read_remote_file", '{"path":"file.txt"}');
+  const fixture = resultWith([
+    { id: "generated", timestamp: 10, messages: [{ index: 0, role: "user" }], outputMessage: { tool_calls: [generated] } },
+    { id: "echo", predecessorId: "generated", timestamp: 20, messages: [
+      { index: 0, role: "user" },
+      { index: 1, role: "assistant", toolCalls: [echoed] },
+      { index: 2, role: "tool", toolCallId: "assigned-id", content: "file contents" },
+    ] },
+    { id: "compacted", predecessorId: "echo", timestamp: 30, messages: [
+      { index: 0, role: "assistant", toolCalls: [echoed] },
+      { index: 1, role: "tool", toolCallId: "assigned-id", content: "file contents" },
+    ] },
+  ]);
+  const records = explorer.buildInvocationIndex(fixture);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].target.callId, "generated");
+  assert.equal(records[0].toolCallId, "assigned-id");
+  assert.equal(records[0].result, "file contents");
+});
+
 test("pairs a tool invocation with its result from the conversation history", () => {
   const invocation = tool("tool-1", "search", '{"q":"logs"}');
   const fixture = resultWith([

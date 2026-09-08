@@ -53,7 +53,7 @@ test("history keeps non-canonical tool calls while response rendering stays cano
   const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   const messageRenderer = app.slice(app.indexOf("function renderMessage"), app.indexOf("function jumpToInvocation"));
   const detailRenderer = app.slice(app.indexOf("function renderDetail"));
-  assert.match(messageRenderer, /renderInvocationBlock\(message\.toolCalls,[\s\S]*toolCopies,\s*\{\s*\}\)/);
+  assert.match(messageRenderer, /target: \{ callId: call\.id, source: "request", messageIndex: message\.index \}/);
   assert.match(detailRenderer, /renderInvocationBlock\(output\.tool_calls,[\s\S]*toolCopies,\s*\{\s*onlyAddressable:\s*true\s*\}\)/);
 });
 

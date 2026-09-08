@@ -324,7 +324,9 @@
       ? '<div class="subpayload"><span>Reasoning</span><pre>' + escapeHtml(reasoning) + "</pre></div>"
       : "";
     const requestToolCalls = Array.isArray(message.toolCalls) && message.toolCalls.length
-      ? renderInvocationBlock(message.toolCalls, invocationRecords(), "request:" + call.id + ":" + message.index, toolCopies, {})
+      ? renderInvocationBlock(message.toolCalls, invocationRecords().filter(record => record.threadId === window.LMStudioToolExplorer.getThreadIdForCall(state.result, call.id)), "request:" + call.id + ":" + message.index, toolCopies, {
+        target: { callId: call.id, source: "request", messageIndex: message.index },
+      })
       : "";
     const toolCallsBlock = requestToolCalls ? '<div class="subpayload"><span>Tool calls</span>' + requestToolCalls + "</div>" : "";
     return '<details class="message-card ' + roleTone + (isAdded && call.predecessorId ? " added" : "") + '"' + (message.index === call.messages.length - 1 ? " open" : "") + '><summary><span class="role-badge">' + escapeHtml(message.role) + '</span><span class="message-preview">' + escapeHtml(preview.slice(0, 150) || "(empty content)") + '</span><span class="message-size">' + formatNumber(text.length) + ' chars</span></summary><div class="message-body"><button class="copy-button" data-copy-message="' + message.index + '" type="button">Copy</button><pre>' + escapeHtml(text || "(empty)") + "</pre>" + reasoningBlock + toolCallsBlock + "</div></details>";
